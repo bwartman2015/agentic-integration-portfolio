@@ -1,0 +1,30 @@
+# Project 01: Ridgeline enterprise MCP gateway.
+#   make up P=01            build and start (Docker Desktop), waits until healthy
+#   make gateway-test P=01  build the image's test stage and run the gateway's tests in it
+#   make down P=01          stop
+# Keycloak, OPA, Postgres and n8n join this file in Milestones 3-6.
+name: ridgeline-p01
+
+services:
+  gateway:
+    build:
+      context: .
+      dockerfile: gateway/Dockerfile
+      target: runtime
+    image: ridgeline/mcp-gateway:0.1.0
+    ports:
+      # Published on loopback only: the gateway has no authentication until Milestone 3.
+      - "127.0.0.1:${GATEWAY_PORT:-8765}:8000"
+    environment:
+      # Add gateway:* when other containers call it as http://gateway:8000 (Milestones 5-6).
+      GATEWAY_ALLOWED_HOSTS: "localhost:*,127.0.0.1:*"
+      GATEWAY_ALLOWED_ORIGINS: "http://localhost:*,http://127.0.0.1:*"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # Unauthenticated until Milestone 3, so it does not come back on its own after a reboot.
+    restart: "no"

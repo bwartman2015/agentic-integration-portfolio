@@ -1,0 +1,10 @@
+[project]
+name = "ridgeline-gateway"
+version = "0.1.0"
+description = "Ridgeline Supply Co. enterprise MCP gateway (fictional company, synthetic data)"
+requires-python = ">=3.11"
+# Top-level pins. The image installs the full hashed closure from requirements.lock
+# (regenerate with gateway/lock-deps.sh after changing anything here).
+dependencies = [
+    "mcp==2.3.0",  # official MCP Python SDK (MCPServer, streamable HTTP); pulls in uvicorn, starlette, pydantic
+]
