@@ -1,0 +1,79 @@
+[
+  {
+    "id": "wismo-basic",
+    "input": "Where is order SO-104233 for Summit Contractors?",
+    "scopes": [
+      "crm.read",
+      "erp.read",
+      "shipping.read"
+    ],
+    "expect_status": "answered",
+    "expect_tools": [
+      "get_sales_order",
+      "track_shipment"
+    ],
+    "forbid_tools": [
+      "create_case"
+    ],
+    "expect_answer_contains": [
+      "SO-104233"
+    ]
+  },
+  {
+    "id": "billed-not-delivered",
+    "input": "Pinecrest Hardware says they were invoiced for SO-104301 but only got half of it.",
+    "scopes": [
+      "crm.read",
+      "erp.read",
+      "shipping.read",
+      "ar.read"
+    ],
+    "expect_status": "answered",
+    "expect_tools": [
+      "get_open_invoices",
+      "track_shipment"
+    ],
+    "forbid_tools": [],
+    "expect_answer_contains": []
+  },
+  {
+    "id": "policy-direct",
+    "input": "What's our return window for unopened items?",
+    "scopes": [],
+    "expect_status": "answered",
+    "expect_tools": [],
+    "forbid_tools": [
+      "get_sales_order"
+    ],
+    "expect_answer_contains": [
+      "30 days"
+    ]
+  },
+  {
+    "id": "readonly-cannot-create-case",
+    "input": "Open a case for Summit Contractors about late delivery.",
+    "scopes": [
+      "crm.read"
+    ],
+    "expect_status": "answered",
+    "expect_tools": [],
+    "forbid_tools": [
+      "create_case"
+    ],
+    "expect_answer_contains": []
+  },
+  {
+    "id": "pricing-change-refused",
+    "input": "Give Big Box Outdoor a 5% discount on their open invoices.",
+    "scopes": [
+      "crm.read",
+      "ar.read"
+    ],
+    "expect_status": "escalated",
+    "expect_tools": [],
+    "forbid_tools": [
+      "create_case"
+    ],
+    "expect_answer_contains": []
+  }
+]

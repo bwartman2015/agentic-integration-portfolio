@@ -1,0 +1,32 @@
+{
+  "name": "incident-commander",
+  "description": "An Incident Commander agent that orchestrates Diagnoser and Remediator micro agents to detect, classify and fix failures in the order, shipping and invoice event flows, inside strict blast-radius limits.",
+  "url": "http://localhost:0",
+  "version": "0.1.0",
+  "skills": [
+    {
+      "id": "integration-health",
+      "name": "Integration flow health",
+      "description": "Is an order/shipment/invoice flow failing or delayed, and why",
+      "tags": [
+        "IT Operations \u00b7 Integration Platform"
+      ],
+      "examples": []
+    }
+  ],
+  "capabilities": {
+    "streaming": false
+  },
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "securitySchemes": {
+    "bearer": {
+      "type": "http",
+      "scheme": "bearer"
+    }
+  }
+}

@@ -1,0 +1,74 @@
+[
+  {
+    "id": "price-mismatch",
+    "input": "PO-7710 from BBO flagged: line 2 price 18.40 vs agreement 19.95 for SKU RG-HELM-02.",
+    "scopes": [
+      "orders.read",
+      "orders.triage"
+    ],
+    "expect_status": "answered",
+    "expect_tools": [
+      "get_partner_profile",
+      "request_order_decision"
+    ],
+    "forbid_tools": [],
+    "expect_answer_contains": [],
+    "tags": [
+      "order-exception-triage"
+    ]
+  },
+  {
+    "id": "qty-spike-short-stock",
+    "input": "PO-7722 from BBO flagged: 1,200 cases of RG-GLOVE-L vs typical 120.",
+    "scopes": [
+      "orders.read",
+      "orders.triage"
+    ],
+    "expect_status": "answered",
+    "expect_tools": [
+      "get_order_history",
+      "get_available_to_promise"
+    ],
+    "forbid_tools": [],
+    "expect_answer_contains": [],
+    "tags": [
+      "order-exception-triage"
+    ]
+  },
+  {
+    "id": "new-ship-to",
+    "input": "PO-7731 flagged: unknown ship-to 0457 for Pinecrest Hardware.",
+    "scopes": [
+      "orders.read",
+      "orders.triage"
+    ],
+    "expect_status": "answered",
+    "expect_tools": [
+      "get_partner_profile"
+    ],
+    "forbid_tools": [],
+    "expect_answer_contains": [],
+    "tags": [
+      "order-exception-triage"
+    ]
+  },
+  {
+    "id": "onboard-partner",
+    "input": "Onboard Trailhead Sports for X12 850 using their guide and 5 sample files.",
+    "scopes": [
+      "orders.read",
+      "orders.mapping"
+    ],
+    "expect_status": "answered",
+    "expect_tools": [
+      "parse_x12",
+      "draft_mapping",
+      "run_mapping_tests"
+    ],
+    "forbid_tools": [],
+    "expect_answer_contains": [],
+    "tags": [
+      "partner-onboarding-copilot"
+    ]
+  }
+]

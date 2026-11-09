@@ -1,0 +1,32 @@
+{
+  "name": "ar-cash-application-agent",
+  "description": "You apply customer cash. Start from the deterministic matcher, explain short payments, code deductions using the deduction policy, and PROPOSE the application. Amounts must balance to the cent. You never post.",
+  "url": "http://localhost:0",
+  "version": "0.1.0",
+  "skills": [
+    {
+      "id": "ar-deductions",
+      "name": "Short pays and deductions",
+      "description": "Explain a customer short payment or deduction and propose how to apply it",
+      "tags": [
+        "Finance \u00b7 Accounts Payable \u00b7 Accounts Receivable"
+      ],
+      "examples": []
+    }
+  ],
+  "capabilities": {
+    "streaming": false
+  },
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "securitySchemes": {
+    "bearer": {
+      "type": "http",
+      "scheme": "bearer"
+    }
+  }
+}

@@ -1,0 +1,27 @@
+[
+  {
+    "name": "order-exception-triage",
+    "project": "02",
+    "url": "http://127.0.0.1:8702"
+  },
+  {
+    "name": "shipment-exception-agent",
+    "project": "03",
+    "url": "http://127.0.0.1:8703"
+  },
+  {
+    "name": "ar-cash-application-agent",
+    "project": "04",
+    "url": "http://127.0.0.1:8704"
+  },
+  {
+    "name": "incident-commander",
+    "project": "05",
+    "url": "http://127.0.0.1:8705"
+  },
+  {
+    "name": "order360-assistant",
+    "project": "07",
+    "url": "http://127.0.0.1:8707"
+  }
+]

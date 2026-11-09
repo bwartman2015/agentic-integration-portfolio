@@ -1,0 +1,91 @@
+[
+  {
+    "id": "ap-price-within-tolerance",
+    "input": "INV-S-3301 from Atlas Safety failed match: price +1.2%.",
+    "scopes": [
+      "ap.read",
+      "ap.propose"
+    ],
+    "expect_status": "answered",
+    "expect_tools": [
+      "three_way_match",
+      "propose_ap_resolution"
+    ],
+    "forbid_tools": [],
+    "expect_answer_contains": [],
+    "tags": [
+      "ap-exception-agent"
+    ]
+  },
+  {
+    "id": "ap-qty-not-received",
+    "input": "INV-S-3317 bills 500 units, receipts show 450.",
+    "scopes": [
+      "ap.read",
+      "ap.propose"
+    ],
+    "expect_status": "answered",
+    "expect_tools": [
+      "get_goods_receipts",
+      "three_way_match"
+    ],
+    "forbid_tools": [],
+    "expect_answer_contains": [],
+    "tags": [
+      "ap-exception-agent"
+    ]
+  },
+  {
+    "id": "ap-duplicate",
+    "input": "INV-S-3320 looks like a duplicate of INV-S-3290.",
+    "scopes": [
+      "ap.read",
+      "ap.propose"
+    ],
+    "expect_status": "answered",
+    "expect_tools": [
+      "check_duplicate_invoice"
+    ],
+    "forbid_tools": [],
+    "expect_answer_contains": [],
+    "tags": [
+      "ap-exception-agent"
+    ]
+  },
+  {
+    "id": "ar-short-pay",
+    "input": "Remittance RM-22018 from Pinecrest Hardware is $40 short on INV-90388.",
+    "scopes": [
+      "ar.read",
+      "ar.propose"
+    ],
+    "expect_status": "answered",
+    "expect_tools": [
+      "match_remittance",
+      "propose_cash_application"
+    ],
+    "forbid_tools": [],
+    "expect_answer_contains": [],
+    "tags": [
+      "ar-cash-application-agent"
+    ]
+  },
+  {
+    "id": "manager-month-end",
+    "input": "Clear today's finance exception queue before close: 2 AP holds and 1 unapplied remittance.",
+    "scopes": [
+      "delegate.ap-exception-agent",
+      "delegate.ar-cash-application-agent"
+    ],
+    "expect_status": "answered",
+    "expect_tools": [
+      "ask_ap_exception_agent",
+      "ask_ar_cash_application_agent"
+    ],
+    "forbid_tools": [],
+    "expect_answer_contains": [],
+    "tags": [
+      "finance-ops-manager"
+    ]
+  }
+]

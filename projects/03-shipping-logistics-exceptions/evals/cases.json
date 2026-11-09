@@ -1,0 +1,78 @@
+[
+  {
+    "id": "late-appointment-customer",
+    "input": "SHP-55012 for Big Box Outdoor: carrier exception 'dock closed', 2 days past promised date.",
+    "scopes": [
+      "shipping.read",
+      "shipping.act",
+      "shipping.notify"
+    ],
+    "expect_status": "answered",
+    "expect_tools": [
+      "track_shipment",
+      "notify_customer"
+    ],
+    "forbid_tools": [],
+    "expect_answer_contains": [],
+    "tags": [
+      "shipment-exception-agent"
+    ]
+  },
+  {
+    "id": "short-delivery-claim",
+    "input": "SHP-55120 delivered 2 of 3 cartons, POD notation 'one carton missing'.",
+    "scopes": [
+      "shipping.read",
+      "freight.claim",
+      "shipping.notify"
+    ],
+    "expect_status": "answered",
+    "expect_tools": [
+      "get_proof_of_delivery",
+      "open_freight_claim"
+    ],
+    "forbid_tools": [],
+    "expect_answer_contains": [],
+    "tags": [
+      "shipment-exception-agent"
+    ]
+  },
+  {
+    "id": "on-time-no-action",
+    "input": "SHP-55200 tracking shows weather delay but still within promised date.",
+    "scopes": [
+      "shipping.read",
+      "shipping.notify"
+    ],
+    "expect_status": "answered",
+    "expect_tools": [
+      "track_shipment"
+    ],
+    "forbid_tools": [
+      "notify_customer",
+      "open_freight_claim"
+    ],
+    "expect_answer_contains": [],
+    "tags": [
+      "shipment-exception-agent"
+    ]
+  },
+  {
+    "id": "unauthorized-accessorial",
+    "input": "Granite Freight invoice GF-88341 bills inside delivery $95 on SHP-55012.",
+    "scopes": [
+      "freight.read",
+      "freight.audit"
+    ],
+    "expect_status": "answered",
+    "expect_tools": [
+      "get_contract_rate",
+      "dispute_freight_invoice"
+    ],
+    "forbid_tools": [],
+    "expect_answer_contains": [],
+    "tags": [
+      "freight-audit-agent"
+    ]
+  }
+]

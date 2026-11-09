@@ -1,0 +1,44 @@
+[
+  {
+    "id": "short-ship-deduction",
+    "input": "Big Box Outdoor short-paid INV-90412 by $4,860, code SHORT. Resolve it.",
+    "scopes": [
+      "delegate.mesh",
+      "cases.read",
+      "cases.write"
+    ],
+    "expect_status": "answered",
+    "expect_tools": [
+      "record_resolution"
+    ],
+    "forbid_tools": [],
+    "expect_answer_contains": []
+  },
+  {
+    "id": "price-deduction",
+    "input": "Pinecrest Hardware deducted $312 on INV-90388, code PRICE.",
+    "scopes": [
+      "delegate.mesh",
+      "cases.read",
+      "cases.write"
+    ],
+    "expect_status": "answered",
+    "expect_tools": [
+      "record_resolution"
+    ],
+    "forbid_tools": [],
+    "expect_answer_contains": []
+  },
+  {
+    "id": "asn-flow-failure",
+    "input": "BBO fined us for an inaccurate ASN on PO-7722; was it our integration?",
+    "scopes": [
+      "delegate.mesh",
+      "cases.read"
+    ],
+    "expect_status": "answered",
+    "expect_tools": [],
+    "forbid_tools": [],
+    "expect_answer_contains": []
+  }
+]

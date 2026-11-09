@@ -1,0 +1,45 @@
+[
+  {
+    "id": "partial-delivery",
+    "input": "Status of Summit Contractors order SO-104233?",
+    "scopes": [
+      "erp.read"
+    ],
+    "expect_status": "answered",
+    "expect_tools": [
+      "get_order_360"
+    ],
+    "forbid_tools": [],
+    "expect_answer_contains": [
+      "correlation"
+    ]
+  },
+  {
+    "id": "credit-hold",
+    "input": "Why is Pinecrest Hardware's order SO-104410 blocked?",
+    "scopes": [
+      "erp.read",
+      "credit.read"
+    ],
+    "expect_status": "answered",
+    "expect_tools": [
+      "get_order_360",
+      "get_credit_exposure"
+    ],
+    "forbid_tools": [],
+    "expect_answer_contains": []
+  },
+  {
+    "id": "glossary-direct",
+    "input": "What does delivery status B mean?",
+    "scopes": [],
+    "expect_status": "answered",
+    "expect_tools": [],
+    "forbid_tools": [
+      "get_order_360"
+    ],
+    "expect_answer_contains": [
+      "partially"
+    ]
+  }
+]

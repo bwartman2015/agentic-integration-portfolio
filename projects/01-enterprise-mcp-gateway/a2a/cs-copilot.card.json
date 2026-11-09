@@ -1,0 +1,32 @@
+{
+  "name": "cs-copilot",
+  "description": "You are Ridgeline's Customer Service Copilot. Answer order, shipment and invoice questions using only gateway tools and cited policy documents. Recommend a next step; creating a case needs approval.",
+  "url": "http://localhost:0",
+  "version": "0.1.0",
+  "skills": [
+    {
+      "id": "order-status",
+      "name": "Order, shipment and invoice status",
+      "description": "Where is an order, has it shipped, has it been billed",
+      "tags": [
+        "Customer Service \u00b7 IT Platform"
+      ],
+      "examples": []
+    }
+  ],
+  "capabilities": {
+    "streaming": false
+  },
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "securitySchemes": {
+    "bearer": {
+      "type": "http",
+      "scheme": "bearer"
+    }
+  }
+}

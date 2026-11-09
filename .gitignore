@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# secrets and private config (never commit)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# local runtime artifacts
+memory.db
+traces.jsonl
+progress/

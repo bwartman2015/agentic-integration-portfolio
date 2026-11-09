@@ -1,0 +1,32 @@
+{
+  "name": "shipment-exception-agent",
+  "description": "You resolve shipment exceptions for Ridgeline Logistics. Check live tracking and proof of delivery, compare against the promised date and the carrier SLA, follow the matching playbook skill, and take the smallest action that protects the customer.",
+  "url": "http://localhost:0",
+  "version": "0.1.0",
+  "skills": [
+    {
+      "id": "shipment-status",
+      "name": "Shipment status and exceptions",
+      "description": "Tracking, ETA, proof of delivery and carton counts for an order or shipment",
+      "tags": [
+        "Shipping \u00b7 Logistics"
+      ],
+      "examples": []
+    }
+  ],
+  "capabilities": {
+    "streaming": false
+  },
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "securitySchemes": {
+    "bearer": {
+      "type": "http",
+      "scheme": "bearer"
+    }
+  }
+}

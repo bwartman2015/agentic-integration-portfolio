@@ -1,0 +1,24 @@
+"""GUARDRAILS & SAFETY: permissions, policy, approval gates, content filtering, rate limits,
+human-in-the-loop and budgets.
+
+Policy: Customer notifications only to the order's contact on file; claims and disputes require evidence fields; max 3 actions per shipment per run.
+Approval: reroute_or_reschedule, open_freight_claim and dispute_freight_invoice go to n8n approval; notify_customer auto-approved for templated delay notices only.
+"""
+from typing import Any
+
+from agentcore import Guardrails, Principal, Tool
+
+
+def policy_hook(principal: Principal, tool: Tool, args: dict[str, Any]) -> tuple[bool, str]:
+    """TODO(guardrails milestone): implement the policy above. Fail closed on errors."""
+    return True, "allowed (TODO: real policy)"
+
+
+def approval_hook(principal: Principal, tool: Tool, args: dict[str, Any]) -> bool:
+    """TODO(guardrails milestone): implement the approval rule above. Fail closed."""
+    return False
+
+
+def get_guardrails(max_iterations: int) -> Guardrails:
+    return Guardrails(max_iterations=max_iterations, max_tool_calls=15, max_cost_usd=0.50,
+                      rate_limit_per_minute=60, policy=policy_hook, approval=approval_hook)

@@ -1,0 +1,32 @@
+{
+  "name": "order360-assistant",
+  "description": "You answer customer order questions using the SAP Order 360 tool. Translate SAP codes into plain English using the retrieved SAP glossary. Always include the correlation id. You cannot release credit holds; explain who can.",
+  "url": "http://localhost:0",
+  "version": "0.1.0",
+  "skills": [
+    {
+      "id": "order-360",
+      "name": "SAP order 360",
+      "description": "Order, delivery, billing and credit-hold status from SAP for a customer or order",
+      "tags": [
+        "Customer Service \u00b7 Credit \u00b7 SAP"
+      ],
+      "examples": []
+    }
+  ],
+  "capabilities": {
+    "streaming": false
+  },
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "securitySchemes": {
+    "bearer": {
+      "type": "http",
+      "scheme": "bearer"
+    }
+  }
+}

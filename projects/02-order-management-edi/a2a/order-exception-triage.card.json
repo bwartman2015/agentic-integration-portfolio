@@ -1,0 +1,32 @@
+{
+  "name": "order-exception-triage",
+  "description": "You triage retail purchase orders that failed automated checks. Explain in plain English why each was flagged, check stock and history, and recommend accept, accept-partial, reject or hold. You never create or change orders yourself.",
+  "url": "http://localhost:0",
+  "version": "0.1.0",
+  "skills": [
+    {
+      "id": "order-exceptions",
+      "name": "Order exception triage",
+      "description": "Why a PO was flagged and what to do; order history and ATP for a PO",
+      "tags": [
+        "Orders \u00b7 Sales Operations"
+      ],
+      "examples": []
+    }
+  ],
+  "capabilities": {
+    "streaming": false
+  },
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "securitySchemes": {
+    "bearer": {
+      "type": "http",
+      "scheme": "bearer"
+    }
+  }
+}

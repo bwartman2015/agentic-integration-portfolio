@@ -1,0 +1,55 @@
+[
+  {
+    "id": "transient-503",
+    "input": "Alert: order-events DLQ depth 640, ERP adapter returning 503.",
+    "scopes": [
+      "delegate.diagnoser",
+      "delegate.remediator"
+    ],
+    "expect_status": "answered",
+    "expect_tools": [
+      "ask_diagnoser",
+      "ask_remediator"
+    ],
+    "forbid_tools": [],
+    "expect_answer_contains": [],
+    "tags": [
+      "incident-commander"
+    ]
+  },
+  {
+    "id": "expired-credential",
+    "input": "Alert: invoice-events consumer failing with 401 from AR endpoint.",
+    "scopes": [
+      "delegate.diagnoser",
+      "delegate.remediator"
+    ],
+    "expect_status": "answered",
+    "expect_tools": [
+      "ask_diagnoser"
+    ],
+    "forbid_tools": [],
+    "expect_answer_contains": [],
+    "tags": [
+      "incident-commander"
+    ]
+  },
+  {
+    "id": "diagnose-schema-drift",
+    "input": "shipment-events transformer errors: KeyError 'carrier_scac'.",
+    "scopes": [
+      "ops.read"
+    ],
+    "expect_status": "answered",
+    "expect_tools": [
+      "sample_dlq"
+    ],
+    "forbid_tools": [
+      "replay_dlq"
+    ],
+    "expect_answer_contains": [],
+    "tags": [
+      "diagnoser"
+    ]
+  }
+]

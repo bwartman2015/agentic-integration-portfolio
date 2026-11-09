@@ -1,0 +1,56 @@
+[
+  {
+    "id": "new-endpoint-tests",
+    "input": "PR 42 adds GET /v1/shipments/{id}/pod to the shipping API.",
+    "scopes": [
+      "repo.read",
+      "repo.tests"
+    ],
+    "expect_status": "answered",
+    "expect_tools": [
+      "get_spec_diff",
+      "write_test_file",
+      "run_tests"
+    ],
+    "forbid_tools": [],
+    "expect_answer_contains": [],
+    "tags": [
+      "test-generation"
+    ]
+  },
+  {
+    "id": "missing-timeout-review",
+    "input": "PR 43 adds an outbound call to the carrier API without a timeout.",
+    "scopes": [
+      "repo.read",
+      "repo.review"
+    ],
+    "expect_status": "answered",
+    "expect_tools": [
+      "read_file",
+      "post_review_comment"
+    ],
+    "forbid_tools": [],
+    "expect_answer_contains": [],
+    "tags": [
+      "integration-review"
+    ]
+  },
+  {
+    "id": "docs-only-skip",
+    "input": "PR 44 only changes README.md.",
+    "scopes": [
+      "repo.read"
+    ],
+    "expect_status": "answered",
+    "expect_tools": [],
+    "forbid_tools": [
+      "write_test_file",
+      "post_review_comment"
+    ],
+    "expect_answer_contains": [],
+    "tags": [
+      "integration-review"
+    ]
+  }
+]

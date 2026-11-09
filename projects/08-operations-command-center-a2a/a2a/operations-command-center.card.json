@@ -1,0 +1,32 @@
+{
+  "name": "operations-command-center",
+  "description": "A Command Center agent that discovers specialist agents (Orders, Shipping, Finance AR, SAP Order 360, Integration Ops) by their A2A Agent Cards and coordinates them to resolve cross-functional disputes with evidence.",
+  "url": "http://localhost:0",
+  "version": "0.1.0",
+  "skills": [
+    {
+      "id": "dispute-resolution",
+      "name": "Cross-functional dispute resolution",
+      "description": "Resolve deductions and order/shipping/billing discrepancies with evidence from specialist agents",
+      "tags": [
+        "Cross-functional \u00b7 Orders + Shipping + Finance"
+      ],
+      "examples": []
+    }
+  ],
+  "capabilities": {
+    "streaming": false
+  },
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "securitySchemes": {
+    "bearer": {
+      "type": "http",
+      "scheme": "bearer"
+    }
+  }
+}
