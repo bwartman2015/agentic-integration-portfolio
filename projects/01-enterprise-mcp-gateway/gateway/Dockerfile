@@ -1,7 +1,7 @@
 # Ridgeline MCP gateway. Build context: the project root (projects/01-enterprise-mcp-gateway/).
 # Stages: base (pinned deps + code) -> test (adds tests; `make gateway-test`) -> runtime (default, last).
 # Reproducible: base image pinned by digest; every Python package pinned with hashes in requirements.lock
-# (regenerate: see gateway/README.md "Updating dependencies").
+# (regenerate with ./lock-deps.sh gateway).
 FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \

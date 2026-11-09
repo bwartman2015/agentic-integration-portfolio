@@ -11,8 +11,12 @@ from mcp import Client
 from starlette.testclient import TestClient
 
 from mock_systems import get_systems, reset_systems
-from ridgeline_gateway.server import (SALES_ORDER_PATTERN, GatewayServer, _log_call, configure_logging, mcp,
-                                      transport_security)
+import httpx2
+
+from ridgeline_gateway.config import load_settings
+from ridgeline_gateway.connectors import build_connectors
+from ridgeline_gateway.server import (ACCOUNT_ID_PATTERN, SALES_ORDER_PATTERN, GatewayServer, _log_call,
+                                      configure_logging, mcp, set_connectors, transport_security)
 
 configure_logging()
 _MCP_HEADERS = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
@@ -23,24 +27,70 @@ def _records(cm) -> list[dict]:
     return [json.loads(r.getMessage()) for r in cm.records]
 
 
+TOOLS = ["search_accounts", "get_sales_order", "track_shipment", "get_open_invoices"]
+
+
+def use_seed_backends() -> None:
+    set_connectors(build_connectors(load_settings({})))
+
+
 class ToolContractTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         reset_systems()
+        use_seed_backends()
 
     async def _call(self, name: str, args: dict):
         async with Client(mcp) as client:
             return await client.call_tool(name, args)
 
-    async def test_lists_exactly_one_read_only_tool_with_closed_schema(self):
+    async def test_lists_the_four_read_only_tools_with_closed_schemas(self):
         async with Client(mcp) as client:
-            tools = (await client.list_tools()).tools
-        self.assertEqual([t.name for t in tools], ["get_sales_order"])
-        schema = tools[0].input_schema
-        self.assertEqual(schema["required"], ["sales_order"])
-        self.assertEqual(schema["properties"]["sales_order"]["pattern"], SALES_ORDER_PATTERN)
-        self.assertIs(schema["additionalProperties"], False)
-        self.assertTrue(tools[0].annotations.read_only_hint)
-        self.assertFalse(tools[0].annotations.destructive_hint)
+            tools = {t.name: t for t in (await client.list_tools()).tools}
+        self.assertEqual(sorted(tools), sorted(TOOLS))
+        expected = {"search_accounts": ("query", None), "get_sales_order": ("sales_order", SALES_ORDER_PATTERN),
+                    "track_shipment": ("sales_order", SALES_ORDER_PATTERN),
+                    "get_open_invoices": ("account_id", ACCOUNT_ID_PATTERN)}
+        for name, (param, pattern) in expected.items():
+            schema = tools[name].input_schema
+            self.assertEqual(schema["required"], [param], name)
+            self.assertIs(schema["additionalProperties"], False, name)
+            if pattern:
+                self.assertEqual(schema["properties"][param]["pattern"], pattern, name)
+            self.assertTrue(tools[name].annotations.read_only_hint, name)
+            self.assertFalse(tools[name].annotations.destructive_hint, name)
+        self.assertNotIn("create_case", tools, "writes stay off the gateway until approvals (Milestone 5)")
+
+    async def test_seed_results_match_the_copilot_shapes(self):
+        systems = get_systems()
+        r = await self._call("search_accounts", {"query": "BBO"})
+        self.assertEqual(r.structured_content, {"query": "BBO", "matches": systems.crm.find_accounts("BBO")})
+        self.assertEqual([m["account_id"] for m in r.structured_content["matches"]], ["ACCT-1001"])
+        r = await self._call("track_shipment", {"sales_order": "SO-104301"})
+        self.assertEqual(r.structured_content, systems.carrier.tracking("SO-104301"))
+        r = await self._call("get_open_invoices", {"account_id": "ACCT-1002"})
+        items = systems.ar.open_items("ACCT-1002")
+        self.assertEqual(r.structured_content, {"account_id": "ACCT-1002", "invoices": items, "count": len(items),
+                                                "total_open": round(sum(i["amount"] for i in items), 2)})
+        self.assertEqual(r.structured_content["total_open"], 8370.0)
+
+    async def test_not_found_for_every_tool(self):
+        cases = [("search_accounts", {"query": "Nonexistent Co"}, None),
+                 ("track_shipment", {"sales_order": "SO-999999"}, "has no carrier record"),
+                 ("get_open_invoices", {"account_id": "ACCT-9999"}, "was not found in AR")]
+        for name, args, message in cases:
+            r = await self._call(name, args)
+            if message is None:
+                self.assertEqual(r.structured_content["matches"], [])
+            else:
+                self.assertTrue(r.is_error, name)
+                self.assertIn(message, r.content[0].text)
+
+    async def test_input_patterns_for_new_tools(self):
+        for name, args in [("search_accounts", {"query": "x"}), ("search_accounts", {"query": "a{b}"}),
+                           ("search_accounts", {"query": "A" * 81}), ("get_open_invoices", {"account_id": "acct-1002"}),
+                           ("track_shipment", {"sales_order": "SO-1"})]:
+            r = await self._call(name, args)
+            self.assertTrue(r.is_error, (name, args))
 
     async def test_every_tool_publishes_a_closed_schema_including_later_registrations(self):
         server = GatewayServer(name="t")
@@ -110,6 +160,7 @@ class CallLoggingTests(unittest.IsolatedAsyncioTestCase):
 
     async def _logged(self, name: str, args: dict) -> dict:
         reset_systems()
+        use_seed_backends()
         with self.assertLogs("ridgeline.gateway", logging.INFO) as cm:
             async with Client(mcp) as client:
                 await client.call_tool(name, args)
@@ -137,6 +188,27 @@ class CallLoggingTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("latency_ms", rec)
                 self.assertIn("request_id", rec)
                 self.assertEqual(rec["tool"], "<unknown>" if outcome == "unknown_tool" else name)
+
+    async def test_backend_and_upstream_fields(self):
+        rec = await self._logged("get_open_invoices", {"account_id": "ACCT-1002"})
+        self.assertEqual(rec["backend"], "seed")
+        self.assertNotIn("upstream_status", rec)
+
+        def boom(r: httpx2.Request) -> httpx2.Response:
+            return httpx2.Response(503, json={"detail": "down"})
+        settings = load_settings({"AR_BACKEND": "http", "AR_API_TOKEN": "t" * 20})
+        set_connectors(build_connectors(settings, transport=httpx2.MockTransport(boom)))
+        try:
+            with self.assertLogs("ridgeline.gateway", logging.INFO) as cm:
+                async with Client(mcp) as client:
+                    result = await client.call_tool("get_open_invoices", {"account_id": "ACCT-1002"})
+        finally:
+            use_seed_backends()
+        self.assertTrue(result.is_error)
+        self.assertIn("AR API returned an error (HTTP 503).", result.content[0].text)
+        rec = [r for r in _records(cm) if r["event"] == "tool_call"][0]
+        self.assertEqual((rec["outcome"], rec["backend"], rec["upstream_status"], rec["error_type"]),
+                         ("upstream_error", "ar_api", 503, "ConnectorError"))
 
     def test_trace_headers_are_logged_only_when_well_formed(self):
         good_tp = "00-" + "a" * 32 + "-" + "b" * 16 + "-01"

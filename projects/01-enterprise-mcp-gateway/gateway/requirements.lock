@@ -1,5 +1,5 @@
 # Pinned, hashed dependencies for the gateway image (python:3.12, linux amd64 + arm64).
-# Generated from gateway/pyproject.toml; regenerate as described in gateway/README.md.
+# Generated from gateway/pyproject.toml by ./lock-deps.sh gateway; do not edit by hand.
 
 annotated-types==0.8.0 \
     --hash=sha256:f072f4d804ea359e4eaf198b1af7a8b0943881a87f31bb764f8bf219bb9419e0

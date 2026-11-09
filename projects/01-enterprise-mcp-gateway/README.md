@@ -48,15 +48,43 @@ flowchart TB
 
 ## Run it
 ```bash
-make up P=01            # from the repo root: build + start the MCP gateway (Docker Desktop)
-make gateway-test P=01  # gateway contract tests, inside the container
+make up P=01            # from the repo root: create .env if missing, build + start gateway and mock APIs (Docker Desktop)
+make gateway-test P=01  # gateway + mock-API tests, inside their images' test stages
 make test P=01          # includes wire-level MCP tests while the gateway is up (skipped otherwise)
+make live-check P=01    # call all four tools through MCP; result per tool with its configured backend
 make arch-check P=01
 make demo P=01          # offline demo with a scripted LLM; prints every span by layer
 make eval P=01          # scripted evals vs evals/baseline.json
 ```
 
 ## Status
+**Milestone 2 (connectors): offline half done; live check pending credentials.** The gateway now serves the four read tools the copilot declares, each through a connector with a `seed` backend and a live backend chosen in `.env`. The mock carrier and AR APIs (FastAPI) run in Docker Compose and are called over authenticated HTTP. The Salesforce (OAuth 2.0 client credentials) and SAP sandbox (API key) connectors are built and tested against fake HTTP backends. **They have not yet run against the real sandboxes**: that waits for the Developer Edition org and the SAP API key ([docs/live-sandbox-setup.md](docs/live-sandbox-setup.md)), then `make seed-salesforce` and `make live-check`. `create_case` (a write) stays off the gateway until approvals in Milestone 5.
+
+| Tool | Connector | Offline (`seed`) | Live backend | Auth | Status |
+|---|---|---|---|---|---|
+| `search_accounts` | CRM | seeded accounts | Salesforce Developer Edition (SOQL, plus SOSL for aliases such as BBO) | OAuth 2.0 client credentials; token cached, refreshed once on 401; instance URL must be a Salesforce host | fake-transport tested; **live pending credentials** |
+| `get_sales_order` | ERP | seeded orders | SAP Business Accelerator Hub sandbox `API_SALES_ORDER_SRV` (OData v2); SAP `1` maps to `SO-000001` | `APIKey` header | fake-transport tested; **live pending API key** |
+| `track_shipment` | Carrier | seeded tracking | mock carrier API container | `X-API-Key` | **live in Compose** (default) |
+| `get_open_invoices` | AR | seeded invoices | mock AR API container; totals computed by the gateway | Bearer token | **live in Compose** (default) |
+
+| Gateway (Milestone 2) | What works now |
+|---|---|
+| Act | Connectors are the only code that talks to a backend. Each is pinned to its host and port, is read-only (GET) at the transport, never follows redirects, caps response size and has a timeout. Failures become sanitized `ToolError`s ("SAP rejected the gateway's credentials.", "AR API did not respond in time.") without URLs, bodies or secrets |
+| Guardrails | Secrets come only from `.env` (git-ignored, generated with owner-only permissions; random mock-API secrets) and are masked in every repr. Each container gets only its own variables; the mock APIs sit on an internal-only network. A half-configured live backend stops the gateway at startup (fail closed) instead of falling back to seeded data. The mock APIs refuse to start without a strong shared secret and compare secrets in constant time |
+| Observe | The call log line adds `backend`, `upstream_status`, `upstream_ms`, `upstream_calls` and the outcome `upstream_error` |
+| Tests | 67 gateway tests (config, connectors over fake transports, tool contracts, logging, and the seed tool against a fake Salesforce org) and 9 mock-API tests (real HTTP), all in the images' test stages; 11 wire-level tests over the running Compose stack, including "every read tool returns data" and carrier/AR-over-HTTP results equal to the seeded systems |
+| Operator tools | `make live-check P=01` (all tools through MCP, result per tool with its configured backend) and `make seed-salesforce P=01 [ARGS=--apply]` (dry run by default; idempotent; synthetic ACCT-xxxx accounts with `@example.com` contacts only; updates only records it created; never deletes) |
+
+`make live-check P=01` on the default (offline) stack:
+```text
+tool               backend      result  summary   (backend = configured in .env)
+search_accounts    seed         ok      1 match(es): Summit Contractors LLC (ACCT-1002)
+get_sales_order    seed         ok      SO-104233 status=Shipped total=8370.0 USD
+track_shipment     carrier_api  ok      1 shipment(s), first status=EXCEPTION
+get_open_invoices  ar_api       ok      1 open invoice(s), total_open=8370.0
+all tools returned data
+```
+
 **Milestone 1 (MCP server skeleton): done.** The gateway is a real MCP server (official SDK `mcp==2.3.0`, streamable HTTP at `http://localhost:8765/mcp`) in Docker Compose, with one read-only tool, `get_sales_order`. It lists and runs from MCP Inspector (CLI and web UI) and is covered by in-container SDK tests and stdlib wire-level JSON-RPC tests. No authentication yet: it is published on loopback only until Keycloak arrives in Milestone 3. Details and Inspector commands: [gateway/README.md](gateway/README.md). Next: Milestone 2, connectors.
 
 | Gateway (Milestone 1) | What works now |
@@ -65,10 +93,10 @@ make eval P=01          # scripted evals vs evals/baseline.json
 | Act | Every call passes one choke point, `GatewayServer.call_tool`, where JWT (M3), OPA (M4) and audit (M5) will plug in. The gateway accepts only canonical IDs; the copilot normalises case and whitespace before calling |
 | Guardrails | Loopback-only port, Host/Origin allowlist (foreign Host gets 421, foreign Origin 403), non-root read-only container with all capabilities dropped, not restarted automatically while unauthenticated; crash details stay server-side |
 | Observe | Exactly one JSON log line per tool call for every outcome (`ok`, `not_found`, `invalid_arguments`, `unknown_tool`, `error`) with latency, JSON-RPC request id and `traceparent`/`X-Request-Id` when sent and well-formed (otherwise `"invalid"`). Argument values and unknown tool names are not logged; SDK INFO logs (session ids, caller text) are silenced |
-| Supply chain | Base image pinned by digest; all 28 Python packages pinned with sha256 hashes (`gateway/requirements.lock`, regenerated by `gateway/lock-deps.sh`) |
-| Tests | 16 in-container contract tests (`make gateway-test P=01`); 8 wire-level tests in `tests/test_gateway_http.py` (`REQUIRE_GATEWAY=1` makes a missing gateway a failure instead of a skip) |
+| Supply chain | Base image pinned by digest; every Python package pinned with sha256 hashes (`gateway/requirements.lock`, `mock_apis/requirements.lock`, regenerated by `./lock-deps.sh <component>`) |
+| Tests | 16 in-container contract tests and 8 wire-level tests at the end of Milestone 1 (`REQUIRE_GATEWAY=1` makes a missing gateway a failure instead of a skip) |
 
-**MCP Inspector CLI against the running gateway** (abridged from the JSON output of `npx -y @modelcontextprotocol/inspector@2.14.0 --cli http://localhost:8765/mcp --transport http ...`; gateway log lines verbatim; synthetic data):
+**MCP Inspector CLI against the Milestone 1 gateway** (abridged from the JSON output of `npx -y @modelcontextprotocol/inspector@2.14.0 --cli http://localhost:8765/mcp --transport http ...`; gateway log lines verbatim; synthetic data):
 ```text
 --method tools/list
   get_sales_order  "Sales order header, lines and delivery status from ERP (read-only; synthetic data)."

@@ -42,7 +42,7 @@ flowchart TB
 | 9 | Multi-Agent System | One gateway serves many specialist agents, each with its own identity and scopes. |
 
 ## The gateway (the environment every agent acts through)
-The copilot's ACT layer will reach enterprise systems only through this MCP server. Build-out by milestone: **M1** server skeleton (done), M2 connectors, M3 Keycloak JWT, M4 OPA, M5 rate limits + PII masking + audit + approvals, M6 the copilot switches to `McpToolSource`.
+The copilot's ACT layer will reach enterprise systems only through this MCP server. Build-out by milestone: **M1** server skeleton (done), **M2** connectors (offline done; live Salesforce/SAP check pending credentials), M3 Keycloak JWT, M4 OPA, M5 rate limits + PII masking + audit + approvals, M6 the copilot switches to `McpToolSource`.
 
 ```mermaid
 flowchart LR
@@ -54,22 +54,33 @@ flowchart LR
     subgraph GW["ridgeline-gateway container (127.0.0.1:8765)"]
         TS["Transport security<br/>Host/Origin allowlist (M1)<br/>JWT (M3) · OPA (M4) · rate limit (M5)"]
         MCPS["MCPServer, streamable HTTP /mcp<br/>tools/list · tools/call"]
-        CT["GatewayServer.call_tool (M1)<br/>unknown tool / extra args rejected<br/>JWT (M3) · OPA (M4) · audit (M5) plug in here"]
-        T1["get_sales_order<br/>read-only, closed schema (M1)"]
-        LOG["OBSERVE: one JSON line per call, every outcome (M1)<br/>audit table (M5)"]
+        CT["GatewayServer.call_tool<br/>unknown tool / extra args rejected<br/>JWT (M3) · OPA (M4) · audit (M5) plug in here"]
+        TOOLS["4 read-only tools (M2)<br/>search_accounts · get_sales_order<br/>track_shipment · get_open_invoices"]
+        CONN["Connectors (M2)<br/>host-pinned, no redirects, timeouts,<br/>sanitized errors, secrets from env"]
+        LOG["OBSERVE: one JSON line per call<br/>backend · upstream status/latency<br/>audit table (M5)"]
     end
-    ERP[("mock ERP, seeded<br/>SAP sandbox in M2")]
+    SEED[("seed backends<br/>mock_systems (offline)")]
+    SF[("Salesforce Dev Edition<br/>OAuth client credentials")]
+    SAP[("SAP sandbox<br/>API_SALES_ORDER_SRV, APIKey")]
+    CAR[("mock carrier API<br/>X-API-Key")]
+    AR[("mock AR API<br/>Bearer")]
     INS --> TS
     CP -.-> TS
     OTH -.-> TS
-    TS --> MCPS --> CT --> T1 --> ERP
+    TS --> MCPS --> CT --> TOOLS --> CONN
     CT -.-> LOG
+    CONN --> SEED
+    CONN -. "CRM_BACKEND=salesforce" .-> SF
+    CONN -. "ERP_BACKEND=sap_sandbox" .-> SAP
+    CONN --> CAR
+    CONN --> AR
 ```
 
-| Gateway concern | Milestone 1 | Code |
+| Gateway concern | Now (Milestone 2) | Code |
 |---|---|---|
-| MCP (concept 6) | Server side: `initialize`, `tools/list`, `tools/call` over streamable HTTP | `gateway/ridgeline_gateway/server.py` |
-| Act | One tool, `get_sales_order`: same name and parameter as the copilot's tool. The gateway enforces `^SO-[0-9]{6}$`; the copilot normalises case/whitespace before calling. Every call passes `GatewayServer.call_tool` | same |
-| Guardrails | Closed JSON Schema (`additionalProperties: false`, extra arguments rejected); loopback-only port; DNS-rebinding protection; hardened container; digest- and hash-pinned image. **No identity yet (M3)** | `server.py`, `docker-compose.yml`, `gateway/Dockerfile`, `gateway/requirements.lock` |
-| Observe | One JSON line per call for every outcome, with request id and trace headers when present; no argument values | `server.py` `_log_call` |
-| Tests | SDK contract tests in the container; stdlib wire-level JSON-RPC tests against the running container | `gateway/tests/`, `tests/test_gateway_http.py` |
+| MCP (concept 6) | Server side: `initialize`, `tools/list`, `tools/call` over streamable HTTP; four read-only tools with the copilot's names, arguments and shapes | `gateway/ridgeline_gateway/server.py` |
+| Act | Tools call connectors, the only code that talks to backends. Each system has a `seed` backend and a live one (Salesforce, SAP sandbox, mock carrier/AR APIs), chosen in `.env`. Deterministic code computes AR totals. The gateway enforces canonical IDs; the copilot normalises case/whitespace | `connectors/`, `mock_apis/` |
+| Guardrails | Closed JSON Schemas; secrets only from env, masked, least privilege per container; fail-closed startup; read-only (GET) connectors pinned to host and port, with no redirects, size caps and timeouts; mock APIs on an internal-only network; Salesforce `instance_url` validated before the token is sent; sanitized upstream errors; loopback-only port; DNS-rebinding protection; hardened containers; digest- and hash-pinned images. **No identity yet (M3)** | `config.py`, `connectors/base.py`, `docker-compose.yml`, Dockerfiles, lock files |
+| Observe | One JSON line per call for every outcome, with backend, upstream status and latency, request id and trace headers; no argument values or secrets | `server.py` `_log_call`, `connectors/base.py` |
+| Memory & State (concept 1, partial) | Account aliases (`BBO` for Big Box Outdoor) are searchable in the CRM (SOSL in Salesforce); long-term memory itself is M6 | `connectors/salesforce.py` |
+| Tests | Config, connector (fake transports) and tool-contract tests in the gateway image; mock-API tests over real HTTP; stdlib wire-level tests over the running stack; `make live-check` for the live sandboxes | `gateway/tests/`, `mock_apis/tests/`, `tests/test_gateway_http.py`, `admin/live_check.py` |

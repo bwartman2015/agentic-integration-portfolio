@@ -1,19 +1,19 @@
-"""Ridgeline MCP gateway (Milestone 1: server skeleton).
+"""Ridgeline MCP gateway (Milestone 2: connectors).
 
 An MCP server (official `mcp` SDK, `MCPServer`, formerly FastMCP; streamable HTTP at /mcp) that exposes
-enterprise systems as tools. Milestone 1 has one hard-coded, read-only tool, `get_sales_order`, backed
-by the seeded mock ERP in `mock_systems/` (synthetic data). Later milestones add:
-  M2 connectors (Salesforce, SAP sandbox, carrier, AR)   M3 Keycloak JWT validation
-  M4 OPA authorization                                   M5 rate limits, PII masking, audit, approvals
+Ridgeline's enterprise systems as four read-only tools. Each tool calls a connector (`connectors/`),
+which has a `seed` backend (offline synthetic data) and a live backend (Salesforce, SAP sandbox, the
+mock carrier and AR APIs), chosen per system in `.env` (see config.py). Later milestones add:
+  M3 Keycloak JWT validation   M4 OPA authorization   M5 rate limits, PII masking, audit, approvals
 
 Every tools/call goes through `GatewayServer.call_tool`, the single choke point where identity (M3),
-policy (M4) and audit (M5) will sit. Today it rejects unknown arguments and logs one JSON line per call
-for every outcome (OBSERVE). Crashes reach the client only as "Error executing tool <name>" (the SDK
-keeps the exception text server-side).
+policy (M4) and audit (M5) will sit. Today it rejects unknown tools and unexpected arguments and logs
+one JSON line per call for every outcome, including which backend answered (OBSERVE). Crashes reach
+the client only as "Error executing tool <name>"; connector failures as a sanitized message.
 
 Security today: NO authentication yet (Milestone 3). The container only publishes on 127.0.0.1, Host
 and Origin headers are checked against an allowlist (DNS-rebinding protection), and arguments are
-validated against the tool's JSON Schema (`additionalProperties: false`).
+validated against closed JSON Schemas. Secrets come only from the environment and are never logged.
 """
 from __future__ import annotations
 
@@ -23,6 +23,8 @@ import os
 import re
 import sys
 import time
+from contextlib import asynccontextmanager
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Annotated, Any
 
 from mcp.server.mcpserver import Context, MCPServer
@@ -33,22 +35,39 @@ from pydantic import Field, ValidationError
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from mock_systems import get_systems
+from .config import ConfigError, load_settings
+from .connectors import ConnectorError, Connectors, NotFound, begin_upstream, build_connectors
 
 SERVER_NAME = "ridgeline-gateway"
-SERVER_VERSION = "0.1.0"
+SERVER_VERSION = "0.2.0"
 SALES_ORDER_PATTERN = r"^SO-[0-9]{6}$"
+ACCOUNT_ID_PATTERN = r"^ACCT-[0-9]{4}$"
+ACCOUNT_QUERY_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9 &.,'-]{1,79}$"
 # Trace headers are caller-supplied: only well-formed values are logged, anything else as "invalid".
 _TRACE_HEADERS = {
     "traceparent": re.compile(r"^[0-9a-f]{2}-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$"),
     "x-request-id": re.compile(r"^[A-Za-z0-9._-]{1,64}$"),
 }
+# openWorldHint: the tools reach external systems (Salesforce, SAP, carrier, AR) whose data changes.
+_READ_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True)
 
 log = logging.getLogger("ridgeline.gateway")
 
+_connectors: Connectors | None = None
 
-class NotFound(ToolError):
-    """The requested business object does not exist (a normal, expected outcome)."""
+
+def get_connectors() -> Connectors:
+    """Connectors built from the environment on first use (main() builds them eagerly to fail fast)."""
+    global _connectors
+    if _connectors is None:
+        _connectors = build_connectors(load_settings())
+    return _connectors
+
+
+def set_connectors(connectors: Connectors | None) -> None:
+    """Tests swap in connectors over fake transports; None rebuilds from the environment."""
+    global _connectors
+    _connectors = connectors
 
 
 class GatewayServer(MCPServer):
@@ -63,6 +82,7 @@ class GatewayServer(MCPServer):
 
     async def call_tool(self, name: str, arguments: dict[str, Any], context: Context | None = None) -> Any:
         started = time.perf_counter()
+        upstream = begin_upstream()
         tool = self._tool_manager.get_tool(name)
         outcome, error = "ok", None
         try:
@@ -82,22 +102,30 @@ class GatewayServer(MCPServer):
             if outcome == "ok":
                 cause = exc.__cause__
                 outcome = ("not_found" if isinstance(cause, NotFound)
+                           else "upstream_error" if isinstance(cause, ConnectorError)
                            else "invalid_arguments" if isinstance(cause, ValidationError) else "error")
+                if isinstance(cause, ConnectorError):
+                    error = type(cause).__name__
             raise
         except Exception as exc:
             outcome, error = "error", type(exc).__name__
             raise
         finally:
             # Unknown tool names are caller-supplied text, so they are not logged verbatim.
-            _log_call(name if tool is not None else "<unknown>", outcome, started, context, error)
+            extra = {"backend": upstream.backend or None, "upstream_status": upstream.status,
+                     "upstream_ms": upstream.ms if upstream.calls else None,
+                     "upstream_calls": upstream.calls or None}
+            _log_call(name if tool is not None else "<unknown>", outcome, started, context, error, extra)
 
 
-def _log_call(tool: str, outcome: str, started: float, context: Context | None, error: str | None) -> None:
+def _log_call(tool: str, outcome: str, started: float, context: Context | None, error: str | None,
+              extra: dict[str, Any] | None = None) -> None:
     """OBSERVE: one structured line per tool call, whatever the outcome. Argument values and unknown
     tool names are not logged (they are caller-supplied and can hold customer data). The JSON-RPC
     request id and any trace header are kept so the M5 audit table can join to agent traces."""
     record: dict[str, Any] = {"event": "tool_call", "tool": tool, "outcome": outcome, "ok": outcome == "ok",
                               "latency_ms": round((time.perf_counter() - started) * 1000, 2)}
+    record.update({k: v for k, v in (extra or {}).items() if v is not None})
     if error:
         record["error_type"] = error
     if context is not None:
@@ -113,34 +141,79 @@ def _log_call(tool: str, outcome: str, started: float, context: Context | None, 
     log.info(json.dumps(record, sort_keys=True))
 
 
+@asynccontextmanager
+async def _lifespan(_server: MCPServer):
+    try:
+        yield None
+    finally:
+        if _connectors is not None:
+            await _connectors.aclose()
+
+
 mcp = GatewayServer(
+    lifespan=_lifespan,
     name=SERVER_NAME,
     title="Ridgeline Supply Co. MCP gateway",
     version=SERVER_VERSION,
-    instructions=("Ridgeline Supply Co. MCP gateway (synthetic data). Milestone 1: one read-only ERP tool, "
-                  "get_sales_order; no authentication yet."),
+    instructions=("Ridgeline Supply Co. MCP gateway (synthetic data). Four read-only tools over CRM, ERP, "
+                  "carrier and AR systems; no authentication yet."),
 )
 
 
-@mcp.tool(
-    title="Get sales order",
-    description="Sales order header, lines and delivery status from ERP (read-only; synthetic data).",
-    annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True,
-                                openWorldHint=False),
-)
-def get_sales_order(
+@mcp.tool(title="Search accounts",
+          description="Find customer accounts in CRM by name, account number or alias (read-only; synthetic data).",
+          annotations=_READ_ONLY)
+async def search_accounts(
+    query: Annotated[str, Field(description="Account name, number or alias, for example Summit or BBO",
+                                pattern=ACCOUNT_QUERY_PATTERN)],
+) -> dict[str, Any]:
+    return {"query": query, "matches": await get_connectors().crm.find_accounts(query)}
+
+
+@mcp.tool(title="Get sales order",
+          description="Sales order header, lines and delivery status from ERP (read-only; synthetic data).",
+          annotations=_READ_ONLY)
+async def get_sales_order(
     sales_order: Annotated[str, Field(description="Sales order number, for example SO-104233",
                                       pattern=SALES_ORDER_PATTERN)],
 ) -> dict[str, Any]:
-    systems = get_systems()
-    if sales_order not in systems.dataset.orders:
+    order = await get_connectors().erp.fetch_order(sales_order)
+    if order is None:
         raise NotFound(f"Sales order {sales_order} was not found in ERP.")
-    return systems.erp.order(sales_order)
+    return order
+
+
+@mcp.tool(title="Track shipment",
+          description="Carrier tracking events, lateness and proof of delivery for a sales order (read-only).",
+          annotations=_READ_ONLY)
+async def track_shipment(
+    sales_order: Annotated[str, Field(description="Sales order number, for example SO-104233",
+                                      pattern=SALES_ORDER_PATTERN)],
+) -> dict[str, Any]:
+    tracking = await get_connectors().carrier.fetch_tracking(sales_order)
+    if tracking is None:
+        raise NotFound(f"Sales order {sales_order} has no carrier record.")
+    return tracking
+
+
+@mcp.tool(title="Get open invoices",
+          description="Open AR invoices for an account, with count and total computed by the gateway (read-only).",
+          annotations=_READ_ONLY)
+async def get_open_invoices(
+    account_id: Annotated[str, Field(description="Account number, for example ACCT-1002",
+                                     pattern=ACCOUNT_ID_PATTERN)],
+) -> dict[str, Any]:
+    invoices = await get_connectors().ar.fetch_open_items(account_id)
+    if invoices is None:
+        raise NotFound(f"Account {account_id} was not found in AR.")
+    # Deterministic code owns the money math (decimal, not float sums); agents only quote these numbers.
+    total = sum((Decimal(str(i["amount"])) for i in invoices), Decimal("0")).quantize(Decimal("0.01"), ROUND_HALF_UP)
+    return {"account_id": account_id, "invoices": invoices, "count": len(invoices), "total_open": float(total)}
 
 
 @mcp.custom_route("/healthz", methods=["GET"])
 async def healthz(_: Request) -> JSONResponse:
-    """Liveness for Docker's healthcheck. Unauthenticated by design; reveals no data."""
+    """Liveness for Docker's healthcheck. Unauthenticated by design; reveals no data or configuration."""
     return JSONResponse({"status": "ok", "server": SERVER_NAME, "version": SERVER_VERSION})
 
 
@@ -158,14 +231,21 @@ def transport_security() -> TransportSecuritySettings:
 
 def configure_logging() -> None:
     logging.basicConfig(level=logging.INFO, stream=sys.stdout, format="%(message)s")
-    # The SDK logs caller-supplied values (tool names, error text) and session ids at INFO;
-    # the gateway's own JSON line is the record of each call.
-    for noisy in ("mcp", "httpx"):
+    # The SDK logs caller-supplied values (tool names, error text) and session ids at INFO, and the
+    # HTTP client logs request URLs; the gateway's own JSON line is the record of each call.
+    for noisy in ("mcp", "httpx", "httpx2", "httpcore", "httpcore2"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
 def main() -> None:
     configure_logging()
+    try:
+        settings = load_settings()
+    except ConfigError as exc:
+        log.error(json.dumps({"event": "startup_failed", "reason": str(exc)}))
+        raise SystemExit(2) from None
+    set_connectors(build_connectors(settings))
+    log.info(json.dumps({"event": "startup", "version": SERVER_VERSION, "backends": settings.backends()}))
     mcp.run(
         "streamable-http",
         host=os.environ.get("GATEWAY_HOST", "127.0.0.1"),

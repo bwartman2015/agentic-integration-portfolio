@@ -1,8 +1,13 @@
-# Project 01: Ridgeline enterprise MCP gateway.
-#   make up P=01            build and start (Docker Desktop), waits until healthy
-#   make gateway-test P=01  build the image's test stage and run the gateway's tests in it
-#   make down P=01          stop
-# Keycloak, OPA, Postgres and n8n join this file in Milestones 3-6.
+# Project 01: Ridgeline enterprise MCP gateway + mock carrier and AR APIs.
+#   make up P=01             create .env if missing (random mock-API secrets), build, start, wait until healthy
+#   make gateway-test P=01   build the images' test stages and run the gateway and mock-API tests
+#   make live-check P=01     call all four tools through MCP; result per tool with its configured backend
+#   make down P=01           stop
+# Each container gets only the variables it needs (no env_file): Salesforce/SAP secrets reach the gateway
+# only, and each mock API only its own shared secret. The mock APIs sit on an internal-only network (no
+# route to the host or the internet); the gateway joins it plus the edge network that publishes its port.
+# Images are local builds only (pull_policy), never pulled from a registry under these names.
+# Keycloak, OPA, Postgres and n8n join in M3-M6.
 name: ridgeline-p01
 
 services:
@@ -11,7 +16,9 @@ services:
       context: .
       dockerfile: gateway/Dockerfile
       target: runtime
-    image: ridgeline/mcp-gateway:0.1.0
+    image: ridgeline/mcp-gateway:0.2.0
+    pull_policy: build
+    networks: [edge, backend]
     ports:
       # Published on loopback only: the gateway has no authentication until Milestone 3.
       - "127.0.0.1:${GATEWAY_PORT:-8765}:8000"
@@ -19,6 +26,25 @@ services:
       # Add gateway:* when other containers call it as http://gateway:8000 (Milestones 5-6).
       GATEWAY_ALLOWED_HOSTS: "localhost:*,127.0.0.1:*"
       GATEWAY_ALLOWED_ORIGINS: "http://localhost:*,http://127.0.0.1:*"
+      CRM_BACKEND: ${CRM_BACKEND:-seed}
+      ERP_BACKEND: ${ERP_BACKEND:-seed}
+      CARRIER_BACKEND: ${CARRIER_BACKEND:-http}
+      AR_BACKEND: ${AR_BACKEND:-http}
+      SF_LOGIN_URL: ${SF_LOGIN_URL:-}
+      SF_CLIENT_ID: ${SF_CLIENT_ID:-}
+      SF_CLIENT_SECRET: ${SF_CLIENT_SECRET:-}
+      SF_API_VERSION: ${SF_API_VERSION:-v62.0}
+      SAP_API_KEY: ${SAP_API_KEY:-}
+      SAP_BASE_URL: ${SAP_BASE_URL:-https://sandbox.api.sap.com/s4hanacloud/sap/opu/odata/sap/API_SALES_ORDER_SRV}
+      CARRIER_API_URL: http://carrier-api:8001
+      CARRIER_API_KEY: ${CARRIER_API_KEY:?run make up P=01 to generate .env}
+      AR_API_URL: http://ar-api:8002
+      AR_API_TOKEN: ${AR_API_TOKEN:?run make up P=01 to generate .env}
+    depends_on:
+      carrier-api:
+        condition: service_healthy
+      ar-api:
+        condition: service_healthy
     read_only: true
     tmpfs:
       - /tmp
@@ -28,3 +54,53 @@ services:
       - no-new-privileges:true
     # Unauthenticated until Milestone 3, so it does not come back on its own after a reboot.
     restart: "no"
+
+  carrier-api:
+    build:
+      context: .
+      dockerfile: mock_apis/Dockerfile
+      target: runtime
+    image: ridgeline/mock-apis:0.1.0
+    pull_policy: build
+    networks: [backend]
+    environment:
+      APP: carrier
+      PORT: "8001"
+      CARRIER_API_KEY: ${CARRIER_API_KEY:?run make up P=01 to generate .env}
+    expose:
+      - "8001"           # internal network only; not published to the host
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+
+  ar-api:
+    image: ridgeline/mock-apis:0.1.0
+    pull_policy: never               # same local image that carrier-api builds; never pulled
+    networks: [backend]
+    depends_on:
+      carrier-api:
+        condition: service_started   # same image; carrier-api builds it
+    environment:
+      APP: ar
+      PORT: "8002"
+      AR_API_TOKEN: ${AR_API_TOKEN:?run make up P=01 to generate .env}
+    expose:
+      - "8002"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+
+networks:
+  edge: {}
+  backend:
+    internal: true

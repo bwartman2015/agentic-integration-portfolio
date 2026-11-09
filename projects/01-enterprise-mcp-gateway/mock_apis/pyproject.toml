@@ -1,0 +1,11 @@
+[project]
+name = "ridgeline-mock-apis"
+version = "0.1.0"
+description = "Mock carrier and AR HTTP APIs over Ridgeline's seeded synthetic data (fictional company)"
+requires-python = ">=3.11"
+# Top-level pins. The image installs the full hashed closure from requirements.lock
+# (regenerate with ./lock-deps.sh mock_apis after changing anything here).
+dependencies = [
+    "fastapi==0.162.2",
+    "uvicorn==0.54.0",
+]
