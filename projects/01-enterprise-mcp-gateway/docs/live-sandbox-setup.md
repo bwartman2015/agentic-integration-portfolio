@@ -106,6 +106,12 @@ Notes:
 - **SAP's order numbers map to `SO-` plus 6 digits** (`1` becomes `SO-000001`). `live-check` asks the sandbox for an existing number first. Ridgeline's demo scenario (SO-104233) exists only in the seed ERP, so the copilot demo keeps `ERP_BACKEND=seed`.
 - **With live CRM/ERP, run the wire tests as `GATEWAY_LIVE_BACKENDS=1 make test P=01`.** That skips the two comparisons against seeded CRM/ERP data.
 
+## 5. Identity: Keycloak (Milestone 3, nothing to set up)
+`make up P=01` starts Keycloak and generates its secrets in `.env`: the admin password and the `cs-rep`/`cs-lead` client secrets. Existing values are never changed. Every gateway call now needs a token:
+- **`make live-check P=01`** gets a `cs-rep` token itself.
+- **MCP Inspector:** run `make token P=01 CLIENT=cs-rep` and paste the output as the Bearer token (Authentication → Bearer Token). It's valid for 5 minutes.
+- **Keycloak admin console:** `http://localhost:8080/`, user `admin`, password = `KC_ADMIN_PASSWORD` in `.env`.
+
 ## Troubleshooting
 | Symptom | Cause / fix |
 |---|---|
@@ -118,3 +124,5 @@ Notes:
 | `SAP is rate limiting the gateway` | The sandbox throttles requests. Wait a minute. |
 | Every SAP order comes back "not found" | A wrong `SAP_BASE_URL` path on `api.sap.com` also answers 404. Reset it to the default in `.env.example`. |
 | Alias search returns nothing | SOSL indexing lag. Retry after a few minutes, or search by name. |
+| Inspector or curl gets **401** from the gateway | No token, or it expired (5 minutes). Run `make token P=01 CLIENT=cs-rep` again. `docker compose logs gateway` shows the `auth_rejected` reason. |
+| `make up` stops with `required variable KC_ADMIN_PASSWORD is missing` | `.env` was created before Milestone 3 and the backfill didn't run. Run `make up P=01` from the repo root; it adds the missing keys. |

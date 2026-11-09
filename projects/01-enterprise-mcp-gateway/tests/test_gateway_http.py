@@ -5,31 +5,76 @@ It speaks raw JSON-RPC over MCP streamable HTTP (initialize -> notifications/ini
 Start the gateway first (`make up P=01`); otherwise these tests are skipped with the reason.
 Set REQUIRE_GATEWAY=1 (CI) to turn that skip into a failure, so a run cannot pass by skipping.
 The URL comes from GATEWAY_URL, else http://localhost:${GATEWAY_PORT:-8765}. `make test` does not
-read .env, so export GATEWAY_PORT if you changed it there.
+read .env, so export GATEWAY_PORT (and KEYCLOAK_PORT) if you changed them there.
 
 The data assertions compare against the seeded dataset (`mock_systems/`), which is what the default
 Compose stack serves: seed CRM/ERP in the gateway, carrier and AR over HTTP from the mock APIs. With
 live CRM/ERP backends configured, set GATEWAY_LIVE_BACKENDS=1 to skip those two comparisons and use
 `make live-check P=01` instead.
+
+Identity (Milestone 3): every /mcp call needs a Keycloak access token. These tests get real tokens from
+the running Keycloak (client credentials) using only the client secrets they need, read from the
+project's .env (git-ignored) or the environment; secrets and tokens are never printed.
 """
 from __future__ import annotations
 
+import base64
 import json
 import os
+import pathlib
 import sys
+import time
 import unittest
+import urllib.parse
 import urllib.error
 import urllib.request
 from typing import Any
 
 BASE = os.environ.get("GATEWAY_URL", f"http://localhost:{os.environ.get('GATEWAY_PORT', '8765')}").rstrip("/")
 REQUIRE_GATEWAY = os.environ.get("REQUIRE_GATEWAY") == "1"
+KEYCLOAK = os.environ.get("KEYCLOAK_URL", f"http://localhost:{os.environ.get('KEYCLOAK_PORT', '8080')}").rstrip("/")
+TOKEN_URL = f"{KEYCLOAK}/realms/ridgeline/protocol/openid-connect/token"
+ISSUER = f"{KEYCLOAK}/realms/ridgeline"
+ENV_FILE = pathlib.Path(__file__).resolve().parents[1] / ".env"
+SECRET_KEYS = {"cs-rep": "CS_REP_CLIENT_SECRET", "cs-lead": "CS_LEAD_CLIENT_SECRET",
+               "p01-expiry-test": "P01_EXPIRY_TEST_CLIENT_SECRET"}
 LIVE_CRM_ERP = os.environ.get("GATEWAY_LIVE_BACKENDS") == "1"
 TOOLS = ["search_accounts", "get_sales_order", "track_shipment", "get_open_invoices"]
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from mock_systems import get_systems  # noqa: E402  (stdlib-only seeded dataset, for comparisons)
 PROTOCOL_VERSION = "2025-06-18"
+
+
+def _client_secret(client_id: str) -> str:
+    """The one secret this test needs: from the environment, else from the project's .env."""
+    key = SECRET_KEYS[client_id]
+    if os.environ.get(key):
+        return os.environ[key]
+    if ENV_FILE.is_file():
+        for line in ENV_FILE.read_text().splitlines():
+            name, sep, value = line.partition("=")
+            if sep and name.strip() == key:
+                return value.split(" #", 1)[0].strip()
+    message = f"{key} not available (run `make up P=01`, which generates it)"
+    if REQUIRE_GATEWAY:
+        raise AssertionError(f"REQUIRE_GATEWAY=1 but {message}")     # a CI run must not pass by skipping
+    raise unittest.SkipTest(message)
+
+
+def fetch_token(client_id: str) -> str:
+    body = urllib.parse.urlencode({"grant_type": "client_credentials"}).encode()
+    basic = base64.b64encode(f"{client_id}:{_client_secret(client_id)}".encode()).decode()
+    req = urllib.request.Request(TOKEN_URL, data=body, method="POST",
+                                 headers={"Authorization": f"Basic {basic}",
+                                          "Content-Type": "application/x-www-form-urlencoded"})
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        return json.loads(resp.read())["access_token"]
+
+
+def claims_of(token: str) -> dict[str, Any]:
+    payload = token.split(".")[1]
+    return json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
 
 
 def _gateway_up() -> bool:
@@ -43,13 +88,16 @@ def _gateway_up() -> bool:
 class McpHttpSession:
     """Minimal MCP client over streamable HTTP: JSON or SSE responses, session id header."""
 
-    def __init__(self, base: str):
+    def __init__(self, base: str, token: str | None = None):
         self.url = f"{base}/mcp"
+        self.token = token
         self.session_id: str | None = None
         self._next_id = 0
 
     def _post(self, payload: dict[str, Any]) -> tuple[int, dict[str, str], str]:
         headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
         if self.session_id:
             headers["Mcp-Session-Id"] = self.session_id
             headers["MCP-Protocol-Version"] = PROTOCOL_VERSION
@@ -58,7 +106,8 @@ class McpHttpSession:
             with urllib.request.urlopen(req, timeout=10) as resp:
                 return resp.status, {k.lower(): v for k, v in resp.headers.items()}, resp.read().decode()
         except urllib.error.HTTPError as err:
-            return err.code, {k.lower(): v for k, v in err.headers.items()}, err.read().decode()
+            with err:
+                return err.code, {k.lower(): v for k, v in err.headers.items()}, err.read().decode()
 
     @staticmethod
     def _parse(headers: dict[str, str], body: str) -> dict[str, Any]:
@@ -106,8 +155,12 @@ class GatewayRequiredTest(unittest.TestCase):
 
 @unittest.skipUnless(_UP, f"gateway not running at {BASE} (start it with `make up P=01`)")
 class GatewayHttpContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.token = fetch_token("cs-rep")
+
     def setUp(self) -> None:
-        self.mcp = McpHttpSession(BASE)
+        self.mcp = McpHttpSession(BASE, self.token)
         self.init = self.mcp.initialize()
 
     def test_initialize_advertises_server_and_tools_capability(self):
@@ -170,9 +223,11 @@ class GatewayHttpContractTests(unittest.TestCase):
         self.assertTrue(result["isError"])
 
     def _rejected_status(self, header: str, value: str) -> int:
+        # Authenticated, so the request reaches the Host/Origin check (identity is checked first).
         req = urllib.request.Request(f"{BASE}/mcp", method="POST", data=b"{}",
                                      headers={header: value, "Content-Type": "application/json",
-                                              "Accept": "application/json, text/event-stream"})
+                                              "Accept": "application/json, text/event-stream",
+                                              "Authorization": f"Bearer {self.token}"})
         with self.assertRaises(urllib.error.HTTPError) as ctx:
             urllib.request.urlopen(req, timeout=5)
         ctx.exception.close()
@@ -183,6 +238,74 @@ class GatewayHttpContractTests(unittest.TestCase):
 
     def test_foreign_origin_is_403(self):
         self.assertEqual(self._rejected_status("Origin", "http://attacker.example"), 403)
+
+
+@unittest.skipUnless(_UP, f"gateway not running at {BASE} (start it with `make up P=01`)")
+class GatewayIdentityTests(unittest.TestCase):
+    """Milestone 3 acceptance: no token / expired token -> 401, against the real Keycloak and gateway."""
+
+    def _init_status(self, token: str | None, scheme: str = "Bearer") -> tuple[int, dict[str, str]]:
+        headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
+        if token is not None:
+            headers["Authorization"] = f"{scheme} {token}"
+        body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                           "params": {"protocolVersion": PROTOCOL_VERSION, "capabilities": {},
+                                      "clientInfo": {"name": "p01-identity-test", "version": "0.1.0"}}}).encode()
+        req = urllib.request.Request(f"{BASE}/mcp", data=body, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                resp.read()
+                return resp.status, {k.lower(): v for k, v in resp.headers.items()}
+        except urllib.error.HTTPError as err:
+            err.read()
+            err.close()
+            return err.code, {k.lower(): v for k, v in err.headers.items()}
+
+    def test_no_token_is_401_with_challenge(self):
+        status, headers = self._init_status(None)
+        self.assertEqual(status, 401)
+        self.assertIn("resource_metadata=", headers.get("www-authenticate", ""))
+
+    def test_tampered_and_wrong_scheme_tokens_are_401(self):
+        token = fetch_token("cs-rep")
+        head, payload, sig = token.split(".")
+        forged = dict(claims_of(token), azp="cs-lead", scope="crm.write")
+        forged_payload = base64.urlsafe_b64encode(json.dumps(forged).encode()).decode().rstrip("=")
+        self.assertEqual(self._init_status(f"{head}.{forged_payload}.{sig}")[0], 401)
+        self.assertEqual(self._init_status(token, scheme="Basic")[0], 401)
+        self.assertEqual(self._init_status("not-a-token")[0], 401)
+
+    def test_real_expired_token_is_401(self):
+        token = fetch_token("p01-expiry-test")            # Keycloak issues it with a 5-second lifetime
+        c = claims_of(token)
+        self.assertLessEqual(c["exp"] - c["iat"], 10)
+        self.assertEqual(self._init_status(token)[0], 200, "fresh token should be accepted")
+        time.sleep(max(0, c["exp"] + 2 - time.time()))    # exp is enforced exactly (no leeway on exp)
+        self.assertEqual(self._init_status(token)[0], 401)
+
+    def test_both_agent_clients_reach_all_tools_with_their_scopes(self):
+        expected = {"cs-rep": {"crm.read", "erp.read", "shipping.read", "ar.read"},
+                    "cs-lead": {"crm.read", "erp.read", "shipping.read", "ar.read", "crm.write"}}
+        for client, scopes in expected.items():
+            with self.subTest(client=client):
+                token = fetch_token(client)
+                c = claims_of(token)
+                self.assertEqual((c["iss"], c["azp"]), (ISSUER, client))
+                self.assertIn("ridgeline-gateway", c["aud"] if isinstance(c["aud"], list) else [c["aud"]])
+                self.assertEqual(set(c["scope"].split()), scopes)
+                session = McpHttpSession(BASE, token)
+                session.initialize()
+                names = [t["name"] for t in session.request("tools/list")["result"]["tools"]]
+                self.assertEqual(sorted(names), sorted(TOOLS))
+                result = session.request("tools/call", {"name": "get_open_invoices",
+                                                        "arguments": {"account_id": "ACCT-1002"}})["result"]
+                self.assertFalse(result.get("isError", False))
+
+    def test_protected_resource_metadata_names_keycloak(self):
+        with urllib.request.urlopen(f"{BASE}/.well-known/oauth-protected-resource/mcp", timeout=5) as resp:
+            meta = json.loads(resp.read())
+        self.assertEqual(meta["resource"], f"{BASE}/mcp")
+        self.assertEqual([a.rstrip("/") for a in meta["authorization_servers"]], [ISSUER])
 
 
 if __name__ == "__main__":

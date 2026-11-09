@@ -1,12 +1,13 @@
-"""Call every gateway tool through MCP (the same path an agent uses) and report each tool's result with
-its configured backend. The gateway's own log line for each call records the backend that actually
-answered (`backend`, `upstream_status`): `docker compose logs gateway`.
+"""Call every gateway tool through MCP (the same path an agent uses, with a real Keycloak token) and report
+each tool's result with its configured backend. The gateway's own log line for each call records the
+backend that actually answered and the verified client: `docker compose logs gateway`.
 
     make live-check P=01
 
-Runs inside the gateway container against http://127.0.0.1:8000/mcp. Exit code 0 only when every tool
-returned data. For the SAP sandbox (SAP's demo orders, not Ridgeline's) it first asks the sandbox for
-an existing order number, since SO-104233 exists only in the seed backend.
+Runs in the one-off `ops` container (it holds the cs-rep client secret; the gateway container does not)
+against http://gateway:8000/mcp, authenticating as cs-rep. Exit code 0 only when every tool returned
+data. With ERP_BACKEND=sap_sandbox it asks for LIVE_CHECK_SAP_ORDER (default SO-000001, one of SAP's own
+sandbox demo orders), since SO-104233 exists only in the seed backend.
 """
 from __future__ import annotations
 
@@ -15,15 +16,24 @@ import os
 import sys
 from typing import Any
 
+import httpx2
 from mcp import Client
+from mcp.client.streamable_http import streamable_http_client
 
-from ..config import ConfigError, load_settings
-from ..connectors import ConnectorError, build_connectors
-from ..connectors.sap import SapSandboxErp
+from ..connectors import ConnectorError
+from .token import token_for
 
-URL = os.environ.get("LIVE_CHECK_URL", "http://127.0.0.1:8000/mcp")
+URL = os.environ.get("LIVE_CHECK_URL", "http://gateway:8000/mcp")
+CLIENT = os.environ.get("LIVE_CHECK_CLIENT", "cs-rep")
 SYSTEM_OF = {"search_accounts": "crm", "get_sales_order": "erp", "track_shipment": "carrier",
              "get_open_invoices": "ar"}
+
+
+def configured_backends(env: dict[str, str]) -> dict[str, str]:
+    """Backend names only (no secrets needed): what .env selects for each system."""
+    raw = {"crm": env.get("CRM_BACKEND", "seed"), "erp": env.get("ERP_BACKEND", "seed"),
+           "carrier": env.get("CARRIER_BACKEND", "seed"), "ar": env.get("AR_BACKEND", "seed")}
+    return {k: {"carrier": "carrier_api", "ar": "ar_api"}.get(k, v) if v == "http" else v for k, v in raw.items()}
 
 
 def summarize(tool: str, data: dict[str, Any]) -> tuple[bool, str]:
@@ -40,31 +50,24 @@ def summarize(tool: str, data: dict[str, Any]) -> tuple[bool, str]:
 
 
 async def run() -> int:
-    settings = load_settings()
-    backends = {k: {"carrier": "carrier_api", "ar": "ar_api"}.get(k, v) if v == "http" else v
-                for k, v in settings.backends().items()}
-    order = "SO-104233"
-    if settings.erp_backend == "sap_sandbox":
-        erp = build_connectors(settings).erp
-        assert isinstance(erp, SapSandboxErp)
-        ids = await erp.sample_order_ids()
-        if not ids:
-            print("SAP sandbox returned no addressable sales orders", file=sys.stderr)
-            return 1
-        order = ids[0]
+    backends = configured_backends(dict(os.environ))
+    order = os.environ.get("LIVE_CHECK_SAP_ORDER", "SO-000001") if backends["erp"] == "sap_sandbox" else "SO-104233"
     calls = [("search_accounts", {"query": "Summit"}), ("get_sales_order", {"sales_order": order}),
              ("track_shipment", {"sales_order": "SO-104233"}), ("get_open_invoices", {"account_id": "ACCT-1002"})]
+    token = await asyncio.to_thread(token_for, CLIENT)
     failures = 0
+    print(f"authenticated as {CLIENT} (Keycloak client credentials)")
     print(f"{'tool':<18} {'backend':<12} {'result':<7} summary   (backend = configured in .env)")
-    async with Client(URL) as client:
-        for tool, args in calls:
-            result = await client.call_tool(tool, args)
-            if result.is_error:
-                ok, summary = False, (result.content[0].text if result.content else "error")
-            else:
-                ok, summary = summarize(tool, result.structured_content or {})
-            failures += not ok
-            print(f"{tool:<18} {backends[SYSTEM_OF[tool]]:<12} {'ok' if ok else 'FAIL':<7} {summary}")
+    async with httpx2.AsyncClient(headers={"Authorization": f"Bearer {token}"}, timeout=30) as http:
+        async with Client(streamable_http_client(URL, http_client=http)) as client:
+            for tool, args in calls:
+                result = await client.call_tool(tool, args)
+                if result.is_error:
+                    ok, summary = False, (result.content[0].text if result.content else "error")
+                else:
+                    ok, summary = summarize(tool, result.structured_content or {})
+                failures += not ok
+                print(f"{tool:<18} {backends[SYSTEM_OF[tool]]:<12} {'ok' if ok else 'FAIL':<7} {summary}")
     print("all tools returned data" if not failures else f"{failures} tool(s) did not return data")
     return 0 if not failures else 1
 
@@ -72,7 +75,7 @@ async def run() -> int:
 def main() -> int:
     try:
         return asyncio.run(run())
-    except (ConfigError, ConnectorError) as exc:
+    except ConnectorError as exc:
         print(exc, file=sys.stderr)
         return 2
 

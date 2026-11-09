@@ -48,16 +48,44 @@ flowchart TB
 
 ## Run it
 ```bash
-make up P=01            # from the repo root: create .env if missing, build + start gateway and mock APIs (Docker Desktop)
+make up P=01            # from the repo root: create/backfill .env, build + start gateway, Keycloak, mock APIs (Docker Desktop)
 make gateway-test P=01  # gateway + mock-API tests, inside their images' test stages
-make test P=01          # includes wire-level MCP tests while the gateway is up (skipped otherwise)
-make live-check P=01    # call all four tools through MCP; result per tool with its configured backend
+make test P=01          # includes wire-level MCP + identity tests while the stack is up (skipped otherwise;
+                        # with live Salesforce/SAP backends add GATEWAY_LIVE_BACKENDS=1)
+make live-check P=01    # call all four tools through MCP as cs-rep (real Keycloak token)
+make token P=01 CLIENT=cs-rep   # print a 5-minute access token, e.g. to paste into MCP Inspector
 make arch-check P=01
 make demo P=01          # offline demo with a scripted LLM; prints every span by layer
 make eval P=01          # scripted evals vs evals/baseline.json
 ```
 
 ## Status
+**Milestone 3 (authentication): done.** Every `/mcp` call now needs a Keycloak access token. Keycloak 26.8.2 runs in Docker Compose with realm `ridgeline`, which has two agent clients using the OAuth 2.0 client credentials flow:
+- **`cs-rep`:** `crm.read erp.read shipping.read ar.read`
+- **`cs-lead`:** the same four, plus `crm.write`
+
+The gateway validates every token itself and answers **401** when there is no token or the token is expired, tampered, signed by the wrong key or issued for a different audience. The 401 carries a `WWW-Authenticate` header that points to the RFC 9728 metadata naming Keycloak, as the MCP authorization spec expects. Per-tool authorization by scope is Milestone 4 (OPA). Until then any authenticated client can call every tool. That includes the test-only `p01-expiry-test` client, which has no scopes; Milestone 4 must deny it everything. Next: Milestone 4.
+
+| Identity (Milestone 3) | What works now |
+|---|---|
+| Guardrails | `KeycloakJwtVerifier` (`gateway/ridgeline_gateway/auth.py`), plugged into the MCP SDK's bearer-auth middleware:<br>• **Signature:** RS256 only (`none` and HS256 key-confusion are rejected), checked against Keycloak's signing keys, cached and refetched at most once a minute for an unknown key.<br>• **Claims:** exact `iss`; `aud` contains `ridgeline-gateway`; `typ` is Bearer; `exp`/`iat`/`iss`/`aud` required; `exp` enforced exactly (as the SDK middleware also does); 5 s leeway only for clock skew on `nbf`/`iat`; `azp` client id required.<br>• **Keys:** cached, refetched as a single fetch however many requests wait.<br>• **Fail closed:** any token that can't be verified gets 401.<br>&nbsp;&nbsp;– Keycloak down at startup: no keys, every token is rejected.<br>&nbsp;&nbsp;– Keycloak down later: cached keys keep working for at most 1 hour, then are dropped. The gateway refuses to start without identity configured. `/healthz` and the metadata stay open. |
+| Multi-Agent / Orchestration | One machine identity per agent (Keycloak clients with only the service-account grant; browser, password and implicit flows are off; no users). The scope names match the copilot's tools, ready for OPA (M4) and the copilot's MCP client (M6) |
+| Secrets | Client secrets and the Keycloak admin password are generated into `.env` by `make up`, which backfills new keys into an existing `.env` without touching your values. They reach Keycloak (through `${ENV}` placeholders in `keycloak/ridgeline-realm.json`) and the one-off `ops` container (`make token`, `make live-check`) only, **never the gateway**, which needs only Keycloak's public keys |
+| Observe | Every tool call logs the verified `client_id` and `scopes`. Every refusal logs `{"event": "auth_rejected", "reason": "expired"}` (or `bad_signature`, `wrong_audience`, `unknown_signing_key`, ...), rate-limited to 10 lines per reason per 10 s with a suppressed count. Tokens are never logged; the live logs were checked for JWTs: 0 |
+| Tests | **Unit tests** (gateway image, test RSA key + fake key endpoint):<br>• every rejection reason;<br>• strict `exp`;<br>• key caching, the rotation refetch rate limit, and one fetch for 20 concurrent unknown keys;<br>• a malformed key is skipped;<br>• Keycloak unreachable, cold and warm;<br>• log rate limiting;<br>• the HTTP app gives 401 + challenge, 200 with a valid token, 401 on an existing session without a token (POST/GET/DELETE), 404 when another client rides a session, open metadata and health;<br>• startup refuses to run without identity.<br>**Wire tests** with real Keycloak tokens:<br>• no token gives 401 + challenge;<br>• a tampered token, a Basic header or garbage gives 401;<br>• **a real expired token gives 401** (a test-only client issues 5-second tokens; the test waits just past expiry);<br>• `cs-rep` and `cs-lead` carry the right claims and reach all 4 tools;<br>• the metadata names Keycloak. |
+
+Verified on the live stack (Salesforce + SAP sandbox + mock carrier/AR):
+- `make gateway-test`: 92 gateway + 9 mock-API tests.
+- `REQUIRE_GATEWAY=1 GATEWAY_LIVE_BACKENDS=1 make test P=01`: 50 tests; 2 seed-only comparisons skipped.
+- `make live-check` authenticated as `cs-rep`:
+```text
+authenticated as cs-rep (Keycloak client credentials)
+search_accounts    salesforce   ok      1 match(es): Summit Contractors LLC (ACCT-1002)
+get_sales_order    sap_sandbox  ok      SO-000001 status=Completed total=52.65 USD
+track_shipment     carrier_api  ok      1 shipment(s), first status=EXCEPTION
+get_open_invoices  ar_api       ok      1 open invoice(s), total_open=8370.0
+```
+
 **Milestone 2 (connectors): done.** The gateway serves the four read tools the copilot declares, each through a connector with a `seed` backend and a live backend chosen in `.env`:
 - **CRM:** a Salesforce Developer Edition org, via OAuth 2.0 client credentials.
 - **ERP:** the SAP Business Accelerator Hub sandbox, via an API key.
@@ -112,7 +140,7 @@ all tools returned data
 |---|---|
 | MCP | `initialize`, `tools/list`, `tools/call` over streamable HTTP; `get_sales_order` with a closed JSON Schema (`^SO-[0-9]{6}$`, `additionalProperties: false`), read-only annotations and structured output; unknown orders, malformed IDs, extra arguments and unknown tools all return `isError: true` |
 | Act | Every call passes one choke point, `GatewayServer.call_tool`, where JWT (M3), OPA (M4) and audit (M5) will plug in. The gateway accepts only canonical IDs; the copilot normalises case and whitespace before calling |
-| Guardrails | Loopback-only port, Host/Origin allowlist (foreign Host gets 421, foreign Origin 403), non-root read-only container with all capabilities dropped, not restarted automatically while unauthenticated; crash details stay server-side |
+| Guardrails | Loopback-only port, Host/Origin allowlist (foreign Host gets 421, foreign Origin 403), non-root read-only container with all capabilities dropped, not restarted automatically (local dev stack); crash details stay server-side |
 | Observe | Exactly one JSON log line per tool call for every outcome (`ok`, `not_found`, `invalid_arguments`, `unknown_tool`, `error`) with latency, JSON-RPC request id and `traceparent`/`X-Request-Id` when sent and well-formed (otherwise `"invalid"`). Argument values and unknown tool names are not logged; SDK INFO logs (session ids, caller text) are silenced |
 | Supply chain | Base image pinned by digest; every Python package pinned with sha256 hashes (`gateway/requirements.lock`, `mock_apis/requirements.lock`, regenerated by `./lock-deps.sh <component>`) |
 | Tests | 16 in-container contract tests and 8 wire-level tests at the end of Milestone 1 (`REQUIRE_GATEWAY=1` makes a missing gateway a failure instead of a skip) |

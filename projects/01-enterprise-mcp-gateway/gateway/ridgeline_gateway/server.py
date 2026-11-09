@@ -1,19 +1,22 @@
-"""Ridgeline MCP gateway (Milestone 2: connectors).
+"""Ridgeline MCP gateway (Milestone 3: identity).
 
 An MCP server (official `mcp` SDK, `MCPServer`, formerly FastMCP; streamable HTTP at /mcp) that exposes
 Ridgeline's enterprise systems as four read-only tools. Each tool calls a connector (`connectors/`),
 which has a `seed` backend (offline synthetic data) and a live backend (Salesforce, SAP sandbox, the
-mock carrier and AR APIs), chosen per system in `.env` (see config.py). Later milestones add:
-  M3 Keycloak JWT validation   M4 OPA authorization   M5 rate limits, PII masking, audit, approvals
+mock carrier and AR APIs), chosen per system in `.env` (see config.py). Every /mcp request must carry a
+valid Keycloak access token (auth.py); /healthz and the RFC 9728 metadata stay open. Later milestones add:
+  M4 OPA authorization (per-tool scopes)   M5 rate limits, PII masking, audit, approvals
 
 Every tools/call goes through `GatewayServer.call_tool`, the single choke point where identity (M3),
 policy (M4) and audit (M5) will sit. Today it rejects unknown tools and unexpected arguments and logs
-one JSON line per call for every outcome, including which backend answered (OBSERVE). Crashes reach
-the client only as "Error executing tool <name>"; connector failures as a sanitized message.
+one JSON line per call for every outcome, including which backend answered and which verified client
+called (OBSERVE). Crashes reach the client only as "Error executing tool <name>"; connector failures
+as a sanitized message.
 
-Security today: NO authentication yet (Milestone 3). The container only publishes on 127.0.0.1, Host
-and Origin headers are checked against an allowlist (DNS-rebinding protection), and arguments are
-validated against closed JSON Schemas. Secrets come only from the environment and are never logged.
+Security today: authentication (JWT, fail closed), no per-tool authorization yet (Milestone 4). The
+container only publishes on 127.0.0.1, Host and Origin headers are checked against an allowlist
+(DNS-rebinding protection), and arguments are validated against closed JSON Schemas. Secrets and
+tokens come only from the environment / request and are never logged.
 """
 from __future__ import annotations
 
@@ -27,6 +30,7 @@ from contextlib import asynccontextmanager
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Annotated, Any
 
+from mcp.server.auth.provider import TokenVerifier
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError, UnexpectedToolError
 from mcp.server.transport_security import TransportSecuritySettings
@@ -35,11 +39,12 @@ from pydantic import Field, ValidationError
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+from .auth import AuthConfig, AuthConfigError, build_verifier, current_principal
 from .config import ConfigError, load_settings
 from .connectors import ConnectorError, Connectors, NotFound, begin_upstream, build_connectors
 
 SERVER_NAME = "ridgeline-gateway"
-SERVER_VERSION = "0.2.0"
+SERVER_VERSION = "0.3.0"
 SALES_ORDER_PATTERN = r"^SO-[0-9]{6}$"
 ACCOUNT_ID_PATTERN = r"^ACCT-[0-9]{4}$"
 ACCOUNT_QUERY_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9 &.,'-]{1,79}$"
@@ -72,6 +77,11 @@ def set_connectors(connectors: Connectors | None) -> None:
 
 class GatewayServer(MCPServer):
     """MCPServer with one governed entry point for every tool call."""
+
+    def enable_auth(self, config: AuthConfig, verifier: TokenVerifier) -> None:
+        """Require a verified bearer token on /mcp (applied when the HTTP app is built)."""
+        self.settings.auth = config.sdk_settings()
+        self._token_verifier = verifier
 
     def add_tool(self, *args: Any, **kwargs: Any) -> None:
         """Every registration (the @tool decorator calls this too) publishes a closed schema, so
@@ -112,7 +122,7 @@ class GatewayServer(MCPServer):
             raise
         finally:
             # Unknown tool names are caller-supplied text, so they are not logged verbatim.
-            extra = {"backend": upstream.backend or None, "upstream_status": upstream.status,
+            extra = {**current_principal(), "backend": upstream.backend or None, "upstream_status": upstream.status,
                      "upstream_ms": upstream.ms if upstream.calls else None,
                      "upstream_calls": upstream.calls or None}
             _log_call(name if tool is not None else "<unknown>", outcome, started, context, error, extra)
@@ -156,7 +166,7 @@ mcp = GatewayServer(
     title="Ridgeline Supply Co. MCP gateway",
     version=SERVER_VERSION,
     instructions=("Ridgeline Supply Co. MCP gateway (synthetic data). Four read-only tools over CRM, ERP, "
-                  "carrier and AR systems; no authentication yet."),
+                  "carrier and AR systems. Requires a Keycloak access token (OAuth 2.0 client credentials)."),
 )
 
 
@@ -218,8 +228,8 @@ async def healthz(_: Request) -> JSONResponse:
 
 
 def transport_security() -> TransportSecuritySettings:
-    """Allow only the hosts/origins we publish on (comma-separated env overrides). Containers that call
-    the gateway as http://gateway:8000 (Milestones 5-6) need `gateway:*` added to GATEWAY_ALLOWED_HOSTS."""
+    """Allow only the hosts/origins we publish on (comma-separated env overrides). Compose adds
+    `gateway:*` so containers on the project network (the ops tools; n8n and the copilot later) can call it."""
     hosts = os.environ.get("GATEWAY_ALLOWED_HOSTS", "localhost:*,127.0.0.1:*")
     origins = os.environ.get("GATEWAY_ALLOWED_ORIGINS", "http://localhost:*,http://127.0.0.1:*")
     return TransportSecuritySettings(
@@ -244,8 +254,15 @@ def main() -> None:
     except ConfigError as exc:
         log.error(json.dumps({"event": "startup_failed", "reason": str(exc)}))
         raise SystemExit(2) from None
+    try:
+        auth = AuthConfig.from_env(dict(os.environ))
+    except AuthConfigError as exc:
+        log.error(json.dumps({"event": "startup_failed", "reason": str(exc)}))
+        raise SystemExit(2) from None
+    mcp.enable_auth(auth, build_verifier(auth, settings.http_timeout_s))
     set_connectors(build_connectors(settings))
-    log.info(json.dumps({"event": "startup", "version": SERVER_VERSION, "backends": settings.backends()}))
+    log.info(json.dumps({"event": "startup", "version": SERVER_VERSION, "backends": settings.backends(),
+                         "auth": {"issuer": auth.issuer, "audience": auth.audience}}))
     mcp.run(
         "streamable-http",
         host=os.environ.get("GATEWAY_HOST", "127.0.0.1"),

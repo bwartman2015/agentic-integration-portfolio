@@ -2,7 +2,7 @@
 
 The Ridgeline enterprise MCP gateway is the one controlled **environment** that every agent in the portfolio acts through. It is built on the official MCP Python SDK (`mcp==2.3.0`, `MCPServer`, which was called FastMCP before SDK 2.x) and serves **streamable HTTP** at `/mcp`. All data is synthetic (fictional Ridgeline Supply Co.).
 
-## Status: Milestone 2 (connectors). Done; live check passed against Salesforce, the SAP sandbox and the mock carrier/AR APIs
+## Status: Milestone 3 (authentication). Every /mcp call needs a Keycloak access token; connectors (M2) live
 | | Now | Arrives in |
 |---|---|---|
 | Tools | Four read-only tools: `search_accounts`, `get_sales_order`, `track_shipment`, `get_open_invoices`. They keep the copilot's names, arguments and output shapes. | M5: `create_case` (write) behind the n8n approval |
@@ -12,8 +12,8 @@ The Ridgeline enterprise MCP gateway is the one controlled **environment** that 
 | Secrets | Read only from the environment and masked in every repr. Each container gets only its own variables. A half-configured live backend stops startup (fail closed). | |
 | Writes | None from the gateway. Its connectors may only send `GET` (plus the Salesforce token `POST`), enforced in `HttpConnector`. The operator seed tool alone builds a `POST`/`PATCH` Salesforce connector, and it never sends `DELETE` or `PUT`. | M5: `create_case` behind approval |
 | Transport security | Published on `127.0.0.1` only. Host and Origin allowlist (a bad Host gets 421, a bad Origin 403). The containers are non-root and read-only, with all capabilities dropped and `restart: "no"`. The mock APIs sit on an internal-only Docker network (`internal: true`: no route to the host or the internet). Images are local builds only (`pull_policy`). | |
-| Identity | **None yet. Do not expose this port beyond localhost.** | M3: Keycloak JWT validation; consider `stateless_http=True` with per-request JWTs |
-| Authorization | None yet | M4: OPA per-tool scopes and region data rule |
+| Identity | **Required.** A Keycloak access token on every `/mcp` call (`auth.py`). The gateway checks:<br>• RS256 signature against Keycloak's keys<br>• exact `iss` and `aud` = `ridgeline-gateway`<br>• `typ` Bearer and an `azp` client id<br>• `exp` exactly; 5 s clock leeway on `nbf`/`iat`<br>Anything else gets 401 with a `WWW-Authenticate` challenge pointing to `/.well-known/oauth-protected-resource/mcp`. It fails closed: an unverifiable token gets 401, cached keys are dropped after Keycloak has been unreachable for 1 hour, and the gateway won't start without `OIDC_*`. | Consider `stateless_http=True` with per-request JWTs |
+| Authorization | Not yet. Any valid client can call every tool, including the scope-less test client `p01-expiry-test`; the token's `scopes` are logged | M4: OPA per-tool scopes and region data rule; must deny `p01-expiry-test` every tool |
 | Observability | One JSON line per call: `{"event": "tool_call", "tool", "outcome", "ok", "latency_ms", "backend", "upstream_status"?, "upstream_ms"?, "upstream_calls"?, "request_id", "traceparent"?, "x_request_id"?, "error_type"?}`.<br>• Outcomes: `ok`, `not_found`, `invalid_arguments`, `unknown_tool`, `upstream_error`, `error`.<br>• Not logged: argument values, unknown tool names, malformed trace headers. SDK and HTTP-client INFO logs are silenced.<br>• Clients see only `Error executing tool <name>` for crashes and a sanitized message for upstream failures. | M5: audit table, rate limits, PII masking, approvals |
 
 ### Connectors
@@ -41,15 +41,19 @@ Live sandbox setup (Salesforce External Client App, SAP API key): [../docs/live-
 gateway/
   ridgeline_gateway/server.py        GatewayServer (MCPServer subclass), the four tools, /healthz, startup
   ridgeline_gateway/config.py        settings from env, Secret, fail-closed validation
+  ridgeline_gateway/auth.py          Keycloak JWT verifier (TokenVerifier), AuthConfig, principal for logs
   ridgeline_gateway/connectors/      base (HttpConnector, errors, upstream info), seed, salesforce, sap, http_mocks
-  ridgeline_gateway/admin/           live_check (all tools through MCP), seed_salesforce (synthetic accounts)
+  ridgeline_gateway/admin/           live_check (all tools through MCP, as cs-rep), token (make token),
+                                     seed_salesforce (synthetic accounts)
   tests/                             config, connectors (httpx2.MockTransport), tool contracts + logging,
                                      admin tools (seed_salesforce against a fake org, live_check)
   pyproject.toml, requirements.lock  top-level pin; full hashed closure (linux amd64 + arm64)
   Dockerfile                         digest-pinned python:3.12-slim; stages base -> test -> runtime
 ../mock_apis/                        FastAPI carrier + AR services, own lock and Dockerfile, tests over real HTTP
 ../lock-deps.sh                      ./lock-deps.sh gateway | mock_apis
-../docker-compose.yml                gateway on 127.0.0.1:${GATEWAY_PORT:-8765}; carrier-api, ar-api internal only
+../docker-compose.yml                gateway on 127.0.0.1:${GATEWAY_PORT:-8765}; keycloak on 127.0.0.1:${KEYCLOAK_PORT:-8080};
+                                     carrier-api, ar-api internal only; ops (profile) for live-check/token
+../keycloak/ridgeline-realm.json     realm, client scopes, clients (secrets are ${ENV} placeholders)
 ../tests/test_gateway_http.py        stdlib wire-level MCP tests against the running stack
 ```
 
@@ -65,11 +69,42 @@ make down P=01
 ```
 If you change `GATEWAY_PORT` in `.env`, export it too: Compose reads `.env`, but `make test` does not. With live CRM/ERP backends, run the wire tests as `GATEWAY_LIVE_BACKENDS=1 make test P=01`.
 
+## Identity (Keycloak)
+- Keycloak 26.8.2 is pinned by digest and published on `127.0.0.1:${KEYCLOAK_PORT:-8080}`. It runs in dev mode: no TLS, H2 database, loopback only.
+- Realm `ridgeline` is imported from `../keycloak/ridgeline-realm.json` on every start, with secrets substituted from `.env`.
+- Admin console: `http://localhost:8080/` (or your `KEYCLOAK_PORT`), user `admin`, password = `KC_ADMIN_PASSWORD` in `.env`.
+- Hardening:
+  - Agent clients have only the service-account (client credentials) grant: standard, implicit, password, device, CIBA and token-exchange flows are off.
+  - `fullScopeAllowed` is false, there are no realm default scopes and no users, and tokens last 5 minutes with no refresh tokens.
+  - `bruteForceProtected` only guards user logins. Client secrets are 192-bit random values.
+  - `sslRequired: external` is fine on loopback; set it to `all` before exposing Keycloak anywhere else.
+
+| Client | Scopes in its token | Use |
+|---|---|---|
+| `cs-rep` | `crm.read erp.read shipping.read ar.read` | the copilot acting for a rep; `make live-check` |
+| `cs-lead` | the four reads plus `crm.write` | the copilot acting for a lead (case writes need approval, M5) |
+| `p01-expiry-test` | none (audience only), 5-second tokens | the wire test that proves an expired token gets 401 |
+
+Every token's issuer is `http://localhost:${KEYCLOAK_PORT:-8080}/realms/ridgeline` (`KC_HOSTNAME`), whether requested from your Mac or from a container. The gateway fetches signing keys internally from `http://keycloak:8080/.../certs`.
+
+Keycloak's database is in memory, so every Keycloak restart re-imports the realm with **new signing keys**. After restarting only Keycloak, wait up to 60 s (the gateway's unknown-key refetch limit) or restart the gateway too; `make up` handles both.
+
+`make token P=01 CLIENT=cs-rep` prints a 5-minute token. It runs in the `ops` container, which holds the client secrets; the gateway container never does.
+
 ## MCP Inspector
+Every call needs a token now. In the web UI:
+1. Run `make token P=01 CLIENT=cs-rep` and copy the output.
+2. Open **Authentication**, set **Header Name** to `Authorization` and **Bearer Token** to the token. Or add a custom header: `Authorization: Bearer <token>`.
+3. Click **Connect**.
+
+The token expires after 5 minutes; get a new one and reconnect. In the CLI, pass the header with `--header "Authorization: Bearer $TOKEN"`.
+Without a token, the Inspector follows the 401 challenge to Keycloak and offers an interactive OAuth sign-in. That can't work here by design: the realm has no users, only agent machine identities (Keycloak's built-in account and admin consoles exist but have nobody to log in). The CLI reports it as `auth_required`. Paste a token instead.
 ```bash
-npx -y @modelcontextprotocol/inspector@2.14.0 --cli http://localhost:8765/mcp --transport http --method tools/list
+TOKEN=$(make -s token P=01 CLIENT=cs-rep)          # from the repo root; stays in this shell only
 npx -y @modelcontextprotocol/inspector@2.14.0 --cli http://localhost:8765/mcp --transport http \
-  --method tools/call --tool-name search_accounts --tool-arg query=BBO
+  --header "Authorization: Bearer $TOKEN" --method tools/list
+npx -y @modelcontextprotocol/inspector@2.14.0 --cli http://localhost:8765/mcp --transport http \
+  --header "Authorization: Bearer $TOKEN" --method tools/call --tool-name search_accounts --tool-arg query=BBO
 npx -y @modelcontextprotocol/inspector@2.14.0 --web --transport http --server-url http://localhost:8765/mcp
 ```
 Try these on the seed data:
@@ -85,7 +120,7 @@ Try these on the seed data:
 To move the base image, update the digest in both Dockerfiles (`docker pull python:3.12-slim`, then `docker image inspect --format '{{index .RepoDigests 0}}' python:3.12-slim`).
 
 ## Notes for later milestones
-- Containers that call the gateway as `http://gateway:8000` (n8n, the copilot; Milestones 5-6) need `gateway:*` added to `GATEWAY_ALLOWED_HOSTS` in `../docker-compose.yml`. Otherwise they get 421.
+- `gateway:*` is in `GATEWAY_ALLOWED_HOSTS`, so containers on the project network (`ops` now; n8n and the copilot in M5-6) can call `http://gateway:8000/mcp`. They still need a token.
 - The Salesforce Run As user is the identity behind every CRM call. The setup guide recommends a dedicated minimum-access integration user now. The gateway's connector is GET-only either way.
 
 ## Why the copilot doesn't use it yet

@@ -1,13 +1,16 @@
-# Project 01: Ridgeline enterprise MCP gateway + mock carrier and AR APIs.
-#   make up P=01             create .env if missing (random mock-API secrets), build, start, wait until healthy
+# Project 01: Ridgeline enterprise MCP gateway + Keycloak + mock carrier and AR APIs.
+#   make up P=01             create/backfill .env (random secrets), build, start, wait until healthy
 #   make gateway-test P=01   build the images' test stages and run the gateway and mock-API tests
-#   make live-check P=01     call all four tools through MCP; result per tool with its configured backend
+#   make live-check P=01     call all four tools through MCP as cs-rep (real Keycloak token)
+#   make token P=01 CLIENT=cs-rep   print a 5-minute access token (e.g. for MCP Inspector)
 #   make down P=01           stop
 # Each container gets only the variables it needs (no env_file): Salesforce/SAP secrets reach the gateway
 # only, and each mock API only its own shared secret. The mock APIs sit on an internal-only network (no
 # route to the host or the internet); the gateway joins it plus the edge network that publishes its port.
-# Images are local builds only (pull_policy), never pulled from a registry under these names.
-# Keycloak, OPA, Postgres and n8n join in M3-M6.
+# Images are local builds only (pull_policy), never pulled from a registry under these names; Keycloak is
+# pinned by digest. Agent client secrets reach Keycloak (to register the clients) and the one-off `ops`
+# container only, never the gateway, which needs only Keycloak's public signing keys.
+# OPA, Postgres and n8n join in M4-M6.
 name: ridgeline-p01
 
 services:
@@ -16,16 +19,21 @@ services:
       context: .
       dockerfile: gateway/Dockerfile
       target: runtime
-    image: ridgeline/mcp-gateway:0.2.0
+    image: ridgeline/mcp-gateway:0.3.0
     pull_policy: build
     networks: [edge, backend]
     ports:
-      # Published on loopback only: the gateway has no authentication until Milestone 3.
+      # Published on loopback only (no TLS in this local stack).
       - "127.0.0.1:${GATEWAY_PORT:-8765}:8000"
     environment:
-      # Add gateway:* when other containers call it as http://gateway:8000 (Milestones 5-6).
-      GATEWAY_ALLOWED_HOSTS: "localhost:*,127.0.0.1:*"
+      # gateway:* lets containers on the project network (ops tools; n8n and the copilot later) call it.
+      GATEWAY_ALLOWED_HOSTS: "localhost:*,127.0.0.1:*,gateway:*"
       GATEWAY_ALLOWED_ORIGINS: "http://localhost:*,http://127.0.0.1:*"
+      # Identity (Milestone 3): tokens carry iss = the public Keycloak URL; keys are fetched internally.
+      OIDC_ISSUER: http://localhost:${KEYCLOAK_PORT:-8080}/realms/ridgeline
+      OIDC_JWKS_URL: http://keycloak:8080/realms/ridgeline/protocol/openid-connect/certs
+      OIDC_AUDIENCE: ridgeline-gateway
+      GATEWAY_PUBLIC_URL: http://localhost:${GATEWAY_PORT:-8765}/mcp
       CRM_BACKEND: ${CRM_BACKEND:-seed}
       ERP_BACKEND: ${ERP_BACKEND:-seed}
       CARRIER_BACKEND: ${CARRIER_BACKEND:-http}
@@ -45,6 +53,8 @@ services:
         condition: service_healthy
       ar-api:
         condition: service_healthy
+      keycloak:
+        condition: service_healthy
     read_only: true
     tmpfs:
       - /tmp
@@ -52,7 +62,7 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
-    # Unauthenticated until Milestone 3, so it does not come back on its own after a reboot.
+    # Local dev stack: nothing restarts on its own after a reboot.
     restart: "no"
 
   carrier-api:
@@ -99,6 +109,67 @@ services:
     security_opt:
       - no-new-privileges:true
     restart: "no"
+
+  keycloak:
+    # Keycloak 26.8.2, pinned by digest. Dev mode (no TLS, H2 database) on loopback only; the realm is
+    # re-imported from keycloak/ridgeline-realm.json with secrets substituted from the environment.
+    image: quay.io/keycloak/keycloak:26.8.2@sha256:723b1d6e254c0fc96d5cffec860c7e0744d6a3277822b865bb538cf891575e41
+    command: ["start-dev", "--import-realm", "--http-port=8080"]
+    networks: [edge]
+    ports:
+      - "127.0.0.1:${KEYCLOAK_PORT:-8080}:8080"
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_ADMIN_PASSWORD:?run make up P=01 to generate .env}
+      # Fixed public issuer for every token; internal callers (the gateway's key fetch) use keycloak:8080.
+      KC_HOSTNAME: http://localhost:${KEYCLOAK_PORT:-8080}
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      KC_HEALTH_ENABLED: "true"
+      CS_REP_CLIENT_SECRET: ${CS_REP_CLIENT_SECRET:?run make up P=01 to generate .env}
+      CS_LEAD_CLIENT_SECRET: ${CS_LEAD_CLIENT_SECRET:?run make up P=01 to generate .env}
+      P01_EXPIRY_TEST_CLIENT_SECRET: ${P01_EXPIRY_TEST_CLIENT_SECRET:?run make up P=01 to generate .env}
+    volumes:
+      - ./keycloak/ridgeline-realm.json:/opt/keycloak/data/import/ridgeline-realm.json:ro
+    # Ephemeral database: every (re)start imports the committed realm exactly, with the current .env
+    # secrets. Nothing in this realm is meant to be edited by hand and kept.
+    tmpfs:
+      - /opt/keycloak/data/h2:uid=1000,gid=0,mode=0770
+    healthcheck:
+      # The image has no curl: talk HTTP to the management port with bash's /dev/tcp.
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 && grep -q '\"UP\"' <&3"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+      start_period: 20s
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+
+  ops:
+    # One-off operator tools (make live-check, make token): same image as the gateway, holds the agent
+    # client secrets so the gateway container never does. Not started by `make up` (profile "ops").
+    image: ridgeline/mcp-gateway:0.3.0
+    pull_policy: never
+    profiles: ["ops"]
+    networks: [edge]
+    environment:
+      OIDC_TOKEN_URL: http://keycloak:8080/realms/ridgeline/protocol/openid-connect/token
+      CS_REP_CLIENT_SECRET: ${CS_REP_CLIENT_SECRET:?run make up P=01 to generate .env}
+      CS_LEAD_CLIENT_SECRET: ${CS_LEAD_CLIENT_SECRET:?run make up P=01 to generate .env}
+      LIVE_CHECK_URL: http://gateway:8000/mcp
+      CRM_BACKEND: ${CRM_BACKEND:-seed}
+      ERP_BACKEND: ${ERP_BACKEND:-seed}
+      CARRIER_BACKEND: ${CARRIER_BACKEND:-http}
+      AR_BACKEND: ${AR_BACKEND:-http}
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
 
 networks:
   edge: {}

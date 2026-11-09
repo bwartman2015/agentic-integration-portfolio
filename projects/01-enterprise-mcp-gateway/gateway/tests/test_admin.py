@@ -175,5 +175,28 @@ class LiveCheckSummaryTests(unittest.TestCase):
         self.assertTrue(live_check.summarize("get_open_invoices", {"invoices": [], "count": 0, "total_open": 0.0})[0])
 
 
+class TokenToolTests(unittest.IsolatedAsyncioTestCase):
+    async def test_client_credentials_request_and_shape_check(self):
+        from ridgeline_gateway.admin.token import fetch_token
+        seen: list[httpx2.Request] = []
+
+        def kc(req: httpx2.Request) -> httpx2.Response:
+            seen.append(req)
+            return httpx2.Response(200, json={"access_token": "aaa.bbb.ccc", "expires_in": 300})
+        url = "http://keycloak:8080/realms/ridgeline/protocol/openid-connect/token"
+        self.assertEqual(await fetch_token("cs-rep", "s3cret-value-0001", url, transport=httpx2.MockTransport(kc)),
+                         "aaa.bbb.ccc")
+        self.assertEqual(seen[0].method, "POST")
+        self.assertEqual(seen[0].headers["Authorization"], "Basic Y3MtcmVwOnMzY3JldC12YWx1ZS0wMDAx")
+        self.assertEqual(seen[0].content, b"grant_type=client_credentials")
+
+    async def test_unusable_token_response_is_an_error(self):
+        from ridgeline_gateway.admin.token import fetch_token
+        url = "http://keycloak:8080/realms/ridgeline/protocol/openid-connect/token"
+        for body in ({"error": "unauthorized_client"}, {"access_token": "not a jwt"}):
+            with self.assertRaises(ConnectorError):
+                await fetch_token("cs-rep", "x", url, transport=httpx2.MockTransport(lambda r, b=body: httpx2.Response(200, json=b)))
+
+
 if __name__ == "__main__":
     unittest.main()

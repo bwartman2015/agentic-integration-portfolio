@@ -4,17 +4,18 @@
 # make eval P=03       run a project's eval cases against its agents (needs an LLM after Milestone 0)
 # make demo            agent-core offline demo; make demo P=01 runs a project's demo.py
 # make check           test + arch-check
-# make up P=01         create .env if missing, build and start a project's Docker Compose services (waits until healthy)
+# make up P=01         create/backfill .env (random secrets), build and start a project's Compose services (waits until healthy)
 # make gateway-test P=01  build the `test` stage of each image (gateway, mock_apis) and run its tests;
 #                      it does not redeploy the running services (run `make up` for that)
-# make live-check P=01 call every gateway tool through MCP and report which backend answered
+# make live-check P=01 call every gateway tool through MCP with a real token; result per tool and configured backend
+# make token P=01 [CLIENT=cs-rep|cs-lead]  print a short-lived Keycloak access token (for MCP Inspector)
 # make seed-salesforce P=01 [ARGS=--apply]  write synthetic Ridgeline accounts to the Salesforce dev org
 # make down P=01       stop a project's Docker Compose services
 PY ?= python3
 P ?=
 PROJECTS := $(if $(P),$(wildcard projects/$(P)*/),$(wildcard projects/*/))
 
-.PHONY: test core-test project-tests arch-check eval check demo up down gateway-test live-check seed-salesforce
+.PHONY: test core-test project-tests arch-check eval check demo up down gateway-test live-check seed-salesforce token
 
 test: core-test project-tests
 
@@ -59,23 +60,19 @@ define for_compose_projects
 	done
 endef
 
-# Creates <project>/.env from .env.example the first time (never overwrites), replacing each
-# KEY=__GENERATE__ line with a fresh random secret (aborts if openssl fails, so no empty or repeated
-# values). Written to a temp file with owner-only permissions, then moved into place; never printed.
-# Keys added to .env.example later are not backfilled into an existing .env: add them by hand.
-ENSURE_ENV = if [ -f $$d/.env.example ] && [ ! -f $$d/.env ]; then \
-		(umask 077; awk '/^[A-Z0-9_]+=__GENERATE__$$/ { c = "openssl rand -hex 24"; r = ""; \
-			if ((c | getline r) <= 0 || length(r) < 32) { print "openssl failed" > "/dev/stderr"; exit 1 }; \
-			close(c); sub(/__GENERATE__/, r) } { print }' $$d/.env.example > $$d/.env.tmp) && \
-		mv $$d/.env.tmp $$d/.env && echo "created $$d.env from .env.example (random mock-API secrets)" \
-		|| { rm -f $$d/.env.tmp; echo "could not create $$d.env"; exit 1; }; fi
+# Creates or backfills <project>/.env from .env.example (scripts/ensure-env.sh): random values for every
+# KEY=__GENERATE__ key that .env lacks; existing values are never changed or printed.
+ENSURE_ENV = scripts/ensure-env.sh $$d
+
+# Compose interpolates required secrets even for `down`; dummy values satisfy those checks.
+COMPOSE_DUMMY_SECRETS = CARRIER_API_KEY=unused AR_API_TOKEN=unused KC_ADMIN_PASSWORD=unused \
+	CS_REP_CLIENT_SECRET=unused CS_LEAD_CLIENT_SECRET=unused P01_EXPIRY_TEST_CLIENT_SECRET=unused
 
 up:
 	$(call for_compose_projects,$(ENSURE_ENV); docker compose -f $$d/docker-compose.yml up -d --build --wait)
 
-# down needs no secrets; dummy values satisfy the compose file's required-variable checks.
 down:
-	$(call for_compose_projects,CARRIER_API_KEY=unused AR_API_TOKEN=unused docker compose -f $$d/docker-compose.yml down)
+	$(call for_compose_projects,$(COMPOSE_DUMMY_SECRETS) docker compose -f $$d/docker-compose.yml --profile ops down)
 
 gateway-test:
 	$(call for_compose_projects,for c in gateway mock_apis; do \
@@ -84,8 +81,13 @@ gateway-test:
 		docker run --rm --network none --read-only --tmpfs /tmp --cap-drop ALL ridgeline/$$c:test || exit 1; \
 	done)
 
+# live-check and token run in the one-off `ops` container (it holds the agent client secrets).
 live-check:
-	$(call for_compose_projects,docker compose -f $$d/docker-compose.yml exec -T gateway python -m ridgeline_gateway.admin.live_check)
+	$(call for_compose_projects,docker compose -f $$d/docker-compose.yml --profile ops run --rm --no-deps -T ops python -m ridgeline_gateway.admin.live_check)
+
+# Prints a short-lived access token to stdout (e.g. for MCP Inspector); errors go to stderr. CLIENT=cs-rep | cs-lead
+token:
+	$(call for_compose_projects,docker compose -f $$d/docker-compose.yml --profile ops run --rm --no-deps -T ops python -m ridgeline_gateway.admin.token $(or $(CLIENT),cs-rep))
 
 # Dry run by default; ARGS=--apply writes the synthetic Ridgeline accounts to the Salesforce dev org.
 seed-salesforce:

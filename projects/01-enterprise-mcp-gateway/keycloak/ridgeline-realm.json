@@ -1,0 +1,186 @@
+{
+  "realm": "ridgeline",
+  "displayName": "Ridgeline Supply Co. (fictional) - agent identities",
+  "enabled": true,
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "resetPasswordAllowed": false,
+  "rememberMe": false,
+  "loginWithEmailAllowed": false,
+  "bruteForceProtected": true,
+  "defaultSignatureAlgorithm": "RS256",
+  "accessTokenLifespan": 300,
+  "revokeRefreshToken": true,
+  "users": [],
+  "clientScopes": [
+    {
+      "name": "gateway-audience",
+      "description": "Adds aud=ridgeline-gateway so the MCP gateway accepts the token",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "false",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "audience ridgeline-gateway",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.custom.audience": "ridgeline-gateway",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "name": "crm.read",
+      "description": "Read CRM accounts",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "false"
+      }
+    },
+    {
+      "name": "crm.write",
+      "description": "Create CRM cases (approval required, Milestone 5)",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "false"
+      }
+    },
+    {
+      "name": "erp.read",
+      "description": "Read ERP sales orders",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "false"
+      }
+    },
+    {
+      "name": "shipping.read",
+      "description": "Read carrier tracking",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "false"
+      }
+    },
+    {
+      "name": "ar.read",
+      "description": "Read AR open items",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "false"
+      }
+    }
+  ],
+  "defaultDefaultClientScopes": [],
+  "defaultOptionalClientScopes": [],
+  "clients": [
+    {
+      "clientId": "cs-rep",
+      "name": "Customer service rep agent (read)",
+      "description": "Machine identity for the CS copilot acting for a rep: read-only scopes",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "${CS_REP_CLIENT_SECRET}",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "frontchannelLogout": false,
+      "fullScopeAllowed": false,
+      "redirectUris": [],
+      "webOrigins": [],
+      "attributes": {
+        "use.refresh.tokens": "false",
+        "client_credentials.use_refresh_token": "false",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false",
+        "standard.token.exchange.enabled": "false"
+      },
+      "defaultClientScopes": [
+        "gateway-audience",
+        "crm.read",
+        "erp.read",
+        "shipping.read",
+        "ar.read"
+      ],
+      "optionalClientScopes": []
+    },
+    {
+      "clientId": "cs-lead",
+      "name": "Customer service lead agent (read + case write)",
+      "description": "Machine identity for the CS copilot acting for a lead: read scopes plus crm.write",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "${CS_LEAD_CLIENT_SECRET}",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "frontchannelLogout": false,
+      "fullScopeAllowed": false,
+      "redirectUris": [],
+      "webOrigins": [],
+      "attributes": {
+        "use.refresh.tokens": "false",
+        "client_credentials.use_refresh_token": "false",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false",
+        "standard.token.exchange.enabled": "false"
+      },
+      "defaultClientScopes": [
+        "gateway-audience",
+        "crm.read",
+        "erp.read",
+        "shipping.read",
+        "ar.read",
+        "crm.write"
+      ],
+      "optionalClientScopes": []
+    },
+    {
+      "clientId": "p01-expiry-test",
+      "name": "Test only: authenticates, never authorized (5-second tokens, no scopes)",
+      "description": "Used by the wire test that proves an expired token gets 401. Has no gateway scopes; Milestone 4 (OPA) must deny it every tool.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "${P01_EXPIRY_TEST_CLIENT_SECRET}",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "frontchannelLogout": false,
+      "fullScopeAllowed": false,
+      "redirectUris": [],
+      "webOrigins": [],
+      "attributes": {
+        "access.token.lifespan": "5",
+        "use.refresh.tokens": "false",
+        "client_credentials.use_refresh_token": "false",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false",
+        "standard.token.exchange.enabled": "false"
+      },
+      "defaultClientScopes": [
+        "gateway-audience"
+      ],
+      "optionalClientScopes": []
+    }
+  ]
+}
