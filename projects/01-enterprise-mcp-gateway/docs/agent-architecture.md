@@ -42,7 +42,7 @@ flowchart TB
 | 9 | Multi-Agent System | One gateway serves many specialist agents, each with its own identity and scopes. |
 
 ## The gateway (the environment every agent acts through)
-The copilot's ACT layer will reach enterprise systems only through this MCP server. Build-out by milestone: **M1** server skeleton (done), **M2** connectors (offline done; live Salesforce/SAP check pending credentials), M3 Keycloak JWT, M4 OPA, M5 rate limits + PII masking + audit + approvals, M6 the copilot switches to `McpToolSource`.
+The copilot's ACT layer will reach enterprise systems only through this MCP server. Build-out by milestone: **M1** server skeleton (done), **M2** connectors (done; live check passed against Salesforce and the SAP sandbox), M3 Keycloak JWT, M4 OPA, M5 rate limits + PII masking + audit + approvals, M6 the copilot switches to `McpToolSource`.
 
 ```mermaid
 flowchart LR

@@ -2,7 +2,7 @@
 
 The Ridgeline enterprise MCP gateway is the one controlled **environment** that every agent in the portfolio acts through. It is built on the official MCP Python SDK (`mcp==2.3.0`, `MCPServer`, which was called FastMCP before SDK 2.x) and serves **streamable HTTP** at `/mcp`. All data is synthetic (fictional Ridgeline Supply Co.).
 
-## Status: Milestone 2 (connectors). Offline parts done; live sandbox check pending credentials
+## Status: Milestone 2 (connectors). Done; live check passed against Salesforce, the SAP sandbox and the mock carrier/AR APIs
 | | Now | Arrives in |
 |---|---|---|
 | Tools | Four read-only tools: `search_accounts`, `get_sales_order`, `track_shipment`, `get_open_invoices`. They keep the copilot's names, arguments and output shapes. | M5: `create_case` (write) behind the n8n approval |

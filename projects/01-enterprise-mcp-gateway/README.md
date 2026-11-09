@@ -58,12 +58,17 @@ make eval P=01          # scripted evals vs evals/baseline.json
 ```
 
 ## Status
-**Milestone 2 (connectors): offline half done; live check pending credentials.** The gateway now serves the four read tools the copilot declares, each through a connector with a `seed` backend and a live backend chosen in `.env`. The mock carrier and AR APIs (FastAPI) run in Docker Compose and are called over authenticated HTTP. The Salesforce (OAuth 2.0 client credentials) and SAP sandbox (API key) connectors are built and tested against fake HTTP backends. **They have not yet run against the real sandboxes**: that waits for the Developer Edition org and the SAP API key ([docs/live-sandbox-setup.md](docs/live-sandbox-setup.md)), then `make seed-salesforce` and `make live-check`. `create_case` (a write) stays off the gateway until approvals in Milestone 5.
+**Milestone 2 (connectors): done.** The gateway serves the four read tools the copilot declares, each through a connector with a `seed` backend and a live backend chosen in `.env`:
+- **CRM:** a Salesforce Developer Edition org, via OAuth 2.0 client credentials.
+- **ERP:** the SAP Business Accelerator Hub sandbox, via an API key.
+- **Carrier and AR:** the mock FastAPI services in Docker Compose, over authenticated HTTP.
+
+`make live-check` returned data from all four live backends (output below). Secrets stay in the git-ignored `.env`. Setup: [docs/live-sandbox-setup.md](docs/live-sandbox-setup.md). `create_case` (a write) stays off the gateway until approvals in Milestone 5.
 
 | Tool | Connector | Offline (`seed`) | Live backend | Auth | Status |
 |---|---|---|---|---|---|
-| `search_accounts` | CRM | seeded accounts | Salesforce Developer Edition (SOQL, plus SOSL for aliases such as BBO) | OAuth 2.0 client credentials; token cached, refreshed once on 401; instance URL must be a Salesforce host | fake-transport tested; **live pending credentials** |
-| `get_sales_order` | ERP | seeded orders | SAP Business Accelerator Hub sandbox `API_SALES_ORDER_SRV` (OData v2); SAP `1` maps to `SO-000001` | `APIKey` header | fake-transport tested; **live pending API key** |
+| `search_accounts` | CRM | seeded accounts | Salesforce Developer Edition (SOQL, plus SOSL for aliases such as BBO) | OAuth 2.0 client credentials; token cached, refreshed once on 401; instance URL must be a Salesforce host | fake-transport tested; **live check passed** |
+| `get_sales_order` | ERP | seeded orders | SAP Business Accelerator Hub sandbox `API_SALES_ORDER_SRV` (OData v2); SAP `1` maps to `SO-000001` | `APIKey` header | fake-transport tested; **live check passed** |
 | `track_shipment` | Carrier | seeded tracking | mock carrier API container | `X-API-Key` | **live in Compose** (default) |
 | `get_open_invoices` | AR | seeded invoices | mock AR API container; totals computed by the gateway | Bearer token | **live in Compose** (default) |
 
@@ -74,6 +79,22 @@ make eval P=01          # scripted evals vs evals/baseline.json
 | Observe | The call log line adds `backend`, `upstream_status`, `upstream_ms`, `upstream_calls` and the outcome `upstream_error` |
 | Tests | 67 gateway tests (config, connectors over fake transports, tool contracts, logging, and the seed tool against a fake Salesforce org) and 9 mock-API tests (real HTTP), all in the images' test stages; 11 wire-level tests over the running Compose stack, including "every read tool returns data" and carrier/AR-over-HTTP results equal to the seeded systems |
 | Operator tools | `make live-check P=01` (all tools through MCP, result per tool with its configured backend) and `make seed-salesforce P=01 [ARGS=--apply]` (dry run by default; idempotent; synthetic ACCT-xxxx accounts with `@example.com` contacts only; updates only records it created; never deletes) |
+
+`make live-check P=01` with every live backend configured. Synthetic Ridgeline accounts were written to the dev org by `make seed-salesforce`; SO-000001 is SAP's own sandbox demo order:
+```text
+tool               backend      result  summary   (backend = configured in .env)
+search_accounts    salesforce   ok      1 match(es): Summit Contractors LLC (ACCT-1002)
+get_sales_order    sap_sandbox  ok      SO-000001 status=Completed total=52.65 USD
+track_shipment     carrier_api  ok      1 shipment(s), first status=EXCEPTION
+get_open_invoices  ar_api       ok      1 open invoice(s), total_open=8370.0
+all tools returned data
+```
+The gateway's own log line for each call confirms which backend answered:
+```text
+{"backend": "salesforce", "event": "tool_call", "latency_ms": 2251.07, "ok": true, "outcome": "ok", "tool": "search_accounts", "upstream_calls": 3, "upstream_status": 200, ...}
+{"backend": "sap_sandbox", "event": "tool_call", "latency_ms": 1266.0, "ok": true, "outcome": "ok", "tool": "get_sales_order", "upstream_calls": 1, "upstream_status": 200, ...}
+```
+`make seed-salesforce` is idempotent: rerunning `--apply` created nothing. The wire tests also pass against the live stack (`GATEWAY_LIVE_BACKENDS=1`, which skips the two seed-data comparisons).
 
 `make live-check P=01` on the default (offline) stack:
 ```text
