@@ -50,8 +50,79 @@ flowchart TB
 ```bash
 make test P=01          # from the repo root
 make arch-check P=01
-make eval P=01          # after Milestone 0
+make demo P=01          # offline demo with a scripted LLM; prints every span by layer
+make eval P=01          # scripted evals vs evals/baseline.json
 ```
 
 ## Status
-Eval results and a demo are added as milestones complete.
+**Milestone 0 (architecture skeleton): done.** The `cs-copilot` runs end to end on agent-core, offline, with a scripted LLM against seeded synthetic Ridgeline data. Next: Milestone 1, the MCP server skeleton.
+
+| Layer / concept | What works now |
+|---|---|
+| Perceive | `CaseRequestPerceiver`: free text or an inbound case → `Percept` with sales orders, POs, invoices, shipments and accounts (incl. aliases such as BBO) |
+| State | Live case snapshot (account, open orders, shipment lateness, open invoice totals), re-read every iteration and **filtered by the caller's scopes** |
+| Act | 5 tools over in-process mock CRM, ERP, carrier and AR systems (`mock_systems/`, deterministic by seed); the gateway replaces them in Milestone 6 |
+| Guardrails | Scopes; a deny-by-default local policy (pricing, credit-limit and payment-term changes always denied; OPA in Milestone 4); writes fail closed until the n8n approval webhook (Milestone 5); budgets; PII masking of everything returned (answers and escalations). Progress files and traces keep raw tool output as internal, git-ignored audit records; masking at rest is decided with the audit log in Milestone 5 |
+| Goal achieved? | Deterministic `EvidenceBackedAnswerVerifier` (below) |
+| RAG, Skills, Plan, Memory, Harness, Observe | Cited policy chunks, trigger-matched skills, plan-and-execute, SQLite long-term memory (pgvector in Milestone 6), progress files, JSONL trace |
+
+**Anti-hallucination guardrail: no invented IDs.** The verifier rejects an answer if any order, PO, invoice, shipment, account or case ID in it (`SO-`, `PO-`, `INV-`, `SHP-`, `ACCT-`, `CASE-` plus digits, any length) does not appear in the request or in a successful tool result. The same goes for money: every dollar amount must equal a number a tool returned, because deterministic code computes totals and the model only quotes them. Every entity in the request must be both addressed and looked up by a tool (a "not found" lookup counts; a policy citation never backs a claim about a customer's order). Every `[source.md#n]` citation must be a real knowledge chunk, and policy questions need a tool result or a valid citation. A rejected answer goes back to the reasoner with the reason, inside the iteration budget; the `invented-id-rejected-then-corrected` eval shows that loop. These checks catch fabricated identifiers and amounts; they do not prove every sentence true, which is what the real-model evals are for.
+
+### Evals (scripted LLM, Milestone 0 baseline)
+Scripted evals replay a fixed model script per case (`fixtures/llm/`), so they test the harness: tool selection, guardrails, verifier and citations, not model judgment. The real-model baseline (`evals/baseline.ollama.json`) arrives in Milestone 7.
+
+Success 100% · tool selection 100% · avg cost $0.0026 (scripted) · avg iterations 2.5
+
+| Case | Result | Tools used | What it shows |
+|---|---|---|---|
+| wismo-basic | PASS | get_sales_order, track_shipment | ReAct, one tool at a time, cited answer |
+| billed-not-delivered | PASS | search_accounts, get_open_invoices, track_shipment | Plan-and-execute; billed 10 cartons vs 5 delivered |
+| policy-direct | PASS | - | "Can I answer directly?" from a cited policy, no tools |
+| readonly-cannot-create-case | PASS | search_accounts | Model tries `create_case`; the permission guardrail denies it |
+| pricing-change-refused | PASS | - | The scripted model escalates; the policy hook's pricing denial is unit-tested |
+| lead-create-case-needs-approval | PASS | search_accounts, get_sales_order | A lead holds `crm.write`, but the approval gate fails closed |
+| unknown-order | PASS | - | The ERP "not found" error reaches the model, which says so instead of guessing |
+| invented-id-rejected-then-corrected | PASS | get_sales_order, track_shipment | Verifier rejects an invented shipment ID; the model looks it up and corrects itself |
+
+Oversized input (over 4,000 characters) is rejected by the input guardrail before any model call; that is covered by a unit test rather than an eval case.
+
+### Demo (excerpt of `make demo P=01`)
+```text
+RUN 1  cs-rep asks: Summit Contractors says SO-104233 hasn't arrived and they were billed. What's going on?
+status=answered  iterations=2  tool_calls=4  tools=['search_accounts', 'get_sales_order', 'track_shipment', 'get_open_invoices']  cost=$0.0030
+
+ANSWER
+SO-104233 for Summit Contractors LLC (ACCT-1002) shipped 2026-10-29 from Columbus OH with Granite Freight Lines
+on SHP-55012. On 2026-11-05 delivery was attempted but the consignee's dock was closed. The new ETA is 2026-11-10,
+3 business days past the promised 2026-11-05 (LTL freight is delivered within 5 business days of the ship date
+[customer-service-policy.md#0]). Summit was billed $8,370.00 on INV-90388, which is still open. Because the
+shipment is more than 2 business days late, notify Logistics and the account rep [escalation-matrix.md#0].
+Next step: open a 'late delivery' case (needs a CS lead's approval) and confirm the new delivery window with
+[EMAIL REDACTED].
+
+TRACE (latency column omitted; "..." marks omitted lines)
+  perceive   perceive.parse            {"kind": "cs_request"}
+  guardrails guardrails.input          {}
+  remember   remember.recall           {"hits": 0}
+  remember   remember.retrieve         {"cites": ["customer-service-policy.md#0", "escalation-matrix.md#0"]}
+  harness    harness.skills            {"active": ["billed-not-delivered", "where-is-my-order"]}
+  remember   remember.state            {"keys": ["accounts", "as_of", "open_invoices", "open_orders", "orders", "shipments"]}
+  think      think.decide              {"decision": "plan", "iteration": 1, "input_tokens": 100, "output_tokens": 20, ...
+  plan       plan.make                 {"steps": ["Resolve the account", "Read the order and delivery status", ...
+  guardrails guardrails.authorize      {"tool": "search_accounts"}
+  act        act.search_accounts       {"ok": true}
+  ...
+  think      think.decide              {"decision": "answer", "iteration": 2, "input_tokens": 100, "output_tokens": 20, ...
+  think      think.goal_check          {"achieved": true}
+  guardrails guardrails.output         {}
+  remember   remember.write            {}
+  harness    harness.checkpoint        {"status": "answered"}
+
+RUN 2  cs-rep asks: Open a case for Summit Contractors about the late delivery of SO-104233.
+guardrail: Result of create_case: {"error": "denied by permission: cs-rep lacks scope crm.write for create_case", ...
+
+RUN 3  cs-lead asks: Open a case for Summit Contractors about the late delivery of SO-104233.
+guardrail: Result of create_case: {"error": "denied by approval_gate: write tool create_case not approved", ...
+
+CRM cases created: 0 (writes fail closed until approvals exist)
+```

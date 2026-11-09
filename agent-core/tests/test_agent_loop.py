@@ -84,6 +84,17 @@ class AgentLoopTests(unittest.TestCase):
         self.assertEqual(out.iterations, 3)
         self.assertTrue(any(s.name == "guardrails.escalate" for s in sink.spans))
 
+    def test_escalation_message_is_pii_masked(self):
+        llm = FakeLLM([{"type": "escalate", "reasoning": "customer jo@example.com wants a refund"}])
+        agent, _ = make(llm)
+        out = agent.run("refund please", ANALYST)
+        self.assertEqual(out.status, "escalated")
+        self.assertNotIn("jo@example.com", out.answer)
+        self.assertIn("[EMAIL REDACTED]", out.answer)
+
+    def test_mask_keeps_sentence_punctuation(self):
+        self.assertEqual(Guardrails().mask("Write to jo@example.com."), "Write to [EMAIL REDACTED].")
+
     def test_goal_check_forces_another_iteration(self):
         class NeedsTool:
             def check(self, percept, answer, results):

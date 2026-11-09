@@ -140,4 +140,8 @@ def compare_to_baseline(report: EvalReport, baseline_path: str | pathlib.Path, t
     now = report.summary()
     if now["success_rate"] + tolerance < base["success_rate"]:
         return False, f"regression: success {now['success_rate']} < baseline {base['success_rate']}"
-    return True, f"ok: success {now['success_rate']} vs baseline {base['success_rate']}"
+    base_tools = base.get("tool_selection_accuracy", 0.0)
+    if now["tool_selection_accuracy"] + tolerance < base_tools:
+        return False, f"regression: tool selection {now['tool_selection_accuracy']} < baseline {base_tools}"
+    return True, (f"ok: success {now['success_rate']} vs baseline {base['success_rate']}; "
+                  f"tool selection {now['tool_selection_accuracy']} vs baseline {base_tools}")

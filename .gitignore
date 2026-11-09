@@ -14,3 +14,4 @@ __pycache__/
 memory.db
 traces.jsonl
 progress/
+**/evals/results/

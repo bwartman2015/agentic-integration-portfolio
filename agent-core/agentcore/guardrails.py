@@ -24,7 +24,7 @@ PolicyHook = Callable[[Principal, Tool, dict[str, Any]], tuple[bool, str]]
 ApprovalHook = Callable[[Principal, Tool, dict[str, Any]], bool]
 
 DEFAULT_PII = {
-    "email": re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+"),
+    "email": re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+"),   # stops before a sentence-ending period
     "ssn": re.compile(r"\b\d{3}-\d{2}-\d{4}\b"),
     "phone": re.compile(r"\b\d{3}[.\- ]\d{3}[.\- ]\d{4}\b"),
 }

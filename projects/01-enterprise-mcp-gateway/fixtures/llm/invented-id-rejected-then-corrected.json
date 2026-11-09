@@ -1,0 +1,31 @@
+{
+  "description": "Eval: the model first answers from nothing with an invented shipment id; the verifier rejects it, the model looks it up and answers correctly.",
+  "responses": [
+    {
+      "type": "answer",
+      "reasoning": "Guessing.",
+      "answer": "Yes, SO-104233 for Summit Contractors LLC was delivered yesterday on SHP-55013."
+    },
+    {
+      "type": "tool",
+      "tool": "get_sales_order",
+      "args": {
+        "sales_order": "SO-104233"
+      },
+      "reasoning": "The verifier wants evidence; read the order."
+    },
+    {
+      "type": "tool",
+      "tool": "track_shipment",
+      "args": {
+        "sales_order": "SO-104233"
+      },
+      "reasoning": "Now tracking."
+    },
+    {
+      "type": "answer",
+      "reasoning": "Evidence-backed now.",
+      "answer": "No. SO-104233 for Summit Contractors LLC has not been delivered: SHP-55012 had a failed delivery attempt on 2026-11-05 (dock closed) and the new ETA is 2026-11-10."
+    }
+  ]
+}

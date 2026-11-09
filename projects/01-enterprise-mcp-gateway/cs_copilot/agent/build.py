@@ -2,10 +2,10 @@
 import os
 import pathlib
 
-from agentcore import Agent, Checkpointer, LLMProvider, Principal, SkillLibrary, Tool, agent_as_tool
+from agentcore import Agent, Checkpointer, LLMProvider, Principal, SkillLibrary
 
 from .guardrails import get_guardrails
-from .knowledge import get_retriever
+from .knowledge import get_retriever, known_citations
 from .memory import get_memory
 from .observe import get_tracer
 from .perceive import CaseRequestPerceiver
@@ -31,13 +31,25 @@ def build_cs_copilot(llm: LLMProvider | None = None) -> Agent:
     llm = llm or get_llm()
     tools = build_registry(CS_COPILOT_TOOLS)
     return Agent(name='cs-copilot', perceiver=CaseRequestPerceiver(), tools=tools,
-                 guardrails=get_guardrails(max_iterations=5), verifier=EvidenceBackedAnswerVerifier(),
+                 guardrails=get_guardrails(max_iterations=5),
+                 verifier=EvidenceBackedAnswerVerifier(known_citations()),
                  **_common('cs-copilot', llm))
 
 
 def cs_copilot_principal() -> Principal:
     """Service identity for cs-copilot. In real runs these scopes come from a verified Keycloak token."""
     return Principal('cs-copilot', frozenset(['ar.read', 'crm.read', 'crm.write', 'erp.read', 'shipping.read']))
+
+
+# Human roles the copilot acts for. Milestone 3 replaces these with Keycloak clients (cs-rep, cs-lead).
+ROLE_SCOPES = {
+    'cs-rep': frozenset(['ar.read', 'crm.read', 'erp.read', 'shipping.read']),
+    'cs-lead': frozenset(['ar.read', 'crm.read', 'crm.write', 'erp.read', 'shipping.read']),
+}
+
+
+def principal_for_role(role: str) -> Principal:
+    return Principal(role, ROLE_SCOPES[role])
 
 
 BUILDERS = {'cs-copilot': build_cs_copilot}

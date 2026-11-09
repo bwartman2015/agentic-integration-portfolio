@@ -13,6 +13,6 @@ trigger: where is, not arrived, hasn't arrived, status of order, tracking
 # Example input
 "Summit Contractors says SO-104233 hasn't arrived."
 # Example output
-"SO-104233 shipped Tue via Granite Freight (SHP-55012). Tracking shows an exception: delivery attempted, dock closed. New ETA is Thu, 2 days past the 5-day ground SLA. Next step: open a case 'late delivery' and notify Logistics."
+"SO-104233 shipped 2026-10-29 via Granite Freight Lines (SHP-55012). Tracking shows an exception: delivery attempted 2026-11-05, dock closed. New ETA is 2026-11-10, 3 business days past the 5-business-day LTL SLA [customer-service-policy.md#0]. Next step: open a case 'late delivery' and notify Logistics [escalation-matrix.md#0]."
 # Notes
 Never promise a refund or credit; that needs a human.

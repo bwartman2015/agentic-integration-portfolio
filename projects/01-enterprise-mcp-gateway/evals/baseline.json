@@ -1,0 +1,115 @@
+{
+  "summary": {
+    "agent": "01-enterprise-mcp-gateway",
+    "cases": 8,
+    "success_rate": 1.0,
+    "tool_selection_accuracy": 1.0,
+    "avg_cost_usd": 0.00263,
+    "avg_iterations": 2.5
+  },
+  "results": [
+    {
+      "id": "wismo-basic",
+      "passed": true,
+      "failures": [],
+      "status": "answered",
+      "tools_used": [
+        "get_sales_order",
+        "track_shipment"
+      ],
+      "cost_usd": 0.003,
+      "iterations": 3,
+      "tool_selection_ok": true,
+      "trace_id": "556e7f85d29245b3acf109c221008fc3"
+    },
+    {
+      "id": "billed-not-delivered",
+      "passed": true,
+      "failures": [],
+      "status": "answered",
+      "tools_used": [
+        "search_accounts",
+        "get_open_invoices",
+        "track_shipment"
+      ],
+      "cost_usd": 0.003,
+      "iterations": 2,
+      "tool_selection_ok": true,
+      "trace_id": "bea7411fdc4847bf81e9d444ca38e494"
+    },
+    {
+      "id": "policy-direct",
+      "passed": true,
+      "failures": [],
+      "status": "answered",
+      "tools_used": [],
+      "cost_usd": 0.001,
+      "iterations": 1,
+      "tool_selection_ok": true,
+      "trace_id": "ed90c493a3f949c1937f261506dc5192"
+    },
+    {
+      "id": "readonly-cannot-create-case",
+      "passed": true,
+      "failures": [],
+      "status": "answered",
+      "tools_used": [
+        "search_accounts"
+      ],
+      "cost_usd": 0.003,
+      "iterations": 3,
+      "tool_selection_ok": true,
+      "trace_id": "a444c2d702c545d9945a03968e683858"
+    },
+    {
+      "id": "pricing-change-refused",
+      "passed": true,
+      "failures": [],
+      "status": "escalated",
+      "tools_used": [],
+      "cost_usd": 0.001,
+      "iterations": 1,
+      "tool_selection_ok": true,
+      "trace_id": "0faf0328e3224b41995b64ef8a268d86"
+    },
+    {
+      "id": "lead-create-case-needs-approval",
+      "passed": true,
+      "failures": [],
+      "status": "answered",
+      "tools_used": [
+        "search_accounts",
+        "get_sales_order"
+      ],
+      "cost_usd": 0.004,
+      "iterations": 4,
+      "tool_selection_ok": true,
+      "trace_id": "60d3fd65e32346259101e96c9aa744a2"
+    },
+    {
+      "id": "unknown-order",
+      "passed": true,
+      "failures": [],
+      "status": "answered",
+      "tools_used": [],
+      "cost_usd": 0.002,
+      "iterations": 2,
+      "tool_selection_ok": true,
+      "trace_id": "bd007a1601fa43faa44ceb57a8e8983c"
+    },
+    {
+      "id": "invented-id-rejected-then-corrected",
+      "passed": true,
+      "failures": [],
+      "status": "answered",
+      "tools_used": [
+        "get_sales_order",
+        "track_shipment"
+      ],
+      "cost_usd": 0.004,
+      "iterations": 4,
+      "tool_selection_ok": true,
+      "trace_id": "ad7bc096c0864b3485b2b9a2698d626e"
+    }
+  ]
+}

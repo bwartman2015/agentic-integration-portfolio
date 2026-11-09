@@ -1,0 +1,18 @@
+{
+  "description": "Eval: the order does not exist; the lookup error reaches THINK and the answer says so instead of guessing.",
+  "responses": [
+    {
+      "type": "tool",
+      "tool": "get_sales_order",
+      "args": {
+        "sales_order": "SO-199999"
+      },
+      "reasoning": "Read the order."
+    },
+    {
+      "type": "answer",
+      "reasoning": "ERP returned not found.",
+      "answer": "I couldn't find SO-199999 in the ERP. Please confirm the order number with the customer; if they have a PO number, I can search by that instead."
+    }
+  ]
+}

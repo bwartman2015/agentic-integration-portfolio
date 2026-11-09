@@ -2,6 +2,7 @@
 # make test P=03       one project (prefix match on projects/03-*)
 # make arch-check      architecture + agentic-concept conformance (rules R1-R9)
 # make eval P=03       run a project's eval cases against its agents (needs an LLM after Milestone 0)
+# make demo            agent-core offline demo; make demo P=01 runs a project's demo.py
 # make check           test + arch-check
 PY ?= python3
 P ?=
@@ -30,6 +31,14 @@ eval:
 	done
 
 demo:
+ifeq ($(P),)
 	cd agent-core && PYTHONPATH=. $(PY) examples/demo.py
+else
+	@set -e; test -n "$(PROJECTS)" || { echo "no project matches P=$(P)"; exit 1; }; \
+	for d in $(PROJECTS); do \
+		if [ ! -f $$d/demo.py ]; then echo "no demo.py in $$d yet"; continue; fi; \
+		PYTHONPATH=agent-core:$$d $(PY) $$d/demo.py; \
+	done
+endif
 
 check: test arch-check

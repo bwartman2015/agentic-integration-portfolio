@@ -1,0 +1,9 @@
+{
+  "description": "Eval pricing-change-refused: pricing changes are human-only, so the agent escalates without calling tools.",
+  "responses": [
+    {
+      "type": "escalate",
+      "reasoning": "Discounts are pricing changes; humans only per the escalation matrix [escalation-matrix.md#0]. Route to the account manager."
+    }
+  ]
+}

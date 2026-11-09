@@ -1,17 +1,40 @@
-"""THINK: the only module that talks to an LLM. Prompts are versioned here."""
-import os
+"""THINK: the only module that talks to an LLM. Prompts are versioned here.
 
-from agentcore import AnthropicLLM, FakeLLM, LLMProvider, MANAGER_PROMPT, OllamaLLM, Reasoner
+Providers (LLM_PROVIDER): ollama (default, free) | anthropic | scripted | fake.
+`scripted` replays a FakeLLM script from fixtures/llm/<name>.json so the demo, tests and the
+scripted eval baseline run offline and deterministically. Scripted runs test the harness
+(tools, guardrails, verifier, citations), not model quality; that is what the Ollama baseline is for.
+"""
+from __future__ import annotations
+
+import json
+import os
+import pathlib
+
+from agentcore import AnthropicLLM, FakeLLM, LLMProvider, OllamaLLM, Reasoner
 from agentcore.reason import SYSTEM_PROMPT
+
+FIXTURES_DIR = pathlib.Path(__file__).resolve().parents[2] / "fixtures" / "llm"
 
 AGENT_PROMPTS = {
     "cs-copilot": "You are Ridgeline's Customer Service Copilot. Answer order, shipment and invoice questions using only gateway tools and cited policy documents. Recommend a next step; creating a case needs approval.",
 }
 
 
-def get_llm() -> LLMProvider:
-    """LLM_PROVIDER=ollama (default, free) | anthropic | fake."""
+def scripted_llm(script: str) -> FakeLLM:
+    """Replay fixtures/llm/<script>.json: {"description": ..., "responses": [decision or plan JSON, ...]}."""
+    data = json.loads((FIXTURES_DIR / f"{script}.json").read_text())
+    return FakeLLM(data["responses"])
+
+
+def get_llm(script: str | None = None) -> LLMProvider:
+    """LLM_PROVIDER=ollama (default, free) | anthropic | scripted | fake. `script` is used only by scripted."""
     provider = os.environ.get("LLM_PROVIDER", "ollama")
+    if provider == "scripted":
+        name = script or os.environ.get("LLM_SCRIPT")
+        if not name:
+            raise ValueError("LLM_PROVIDER=scripted needs a script name (argument or LLM_SCRIPT)")
+        return scripted_llm(name)
     if provider == "fake":
         return FakeLLM([{"type": "escalate", "reasoning": "fake provider: script responses in tests"}])
     if provider == "anthropic":

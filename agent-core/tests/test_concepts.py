@@ -127,6 +127,11 @@ class EvalsTests(unittest.TestCase):
             ok, msg = compare_to_baseline(rep, base)
             self.assertFalse(ok)
             self.assertIn("regression", msg)
+            # tool-selection accuracy is guarded too, not only the success rate
+            base.write_text(json.dumps({"summary": {"success_rate": 0.5, "tool_selection_accuracy": 1.0}}))
+            ok, msg = compare_to_baseline(rep, base)
+            self.assertFalse(ok)
+            self.assertIn("tool selection", msg)
 
 
 class McpToolSourceTests(unittest.TestCase):

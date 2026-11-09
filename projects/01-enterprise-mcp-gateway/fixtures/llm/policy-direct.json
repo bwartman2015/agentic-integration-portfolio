@@ -1,0 +1,10 @@
+{
+  "description": "Eval policy-direct: answer directly from the retrieved policy, no tools.",
+  "responses": [
+    {
+      "type": "answer",
+      "reasoning": "The returns policy is in the retrieved context.",
+      "answer": "Unopened items can be returned within 30 days of delivery for a full refund [customer-service-policy.md#0]."
+    }
+  ]
+}

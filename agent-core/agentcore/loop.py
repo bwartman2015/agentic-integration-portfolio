@@ -203,6 +203,7 @@ class Agent:
                                        status=status, history=stm.messages, results=results)
 
     def _escalate(self, trace, message, iterations, tool_calls, cost, stm) -> Outcome:
+        message = self.guardrails.mask(message)        # escalations are output too: same PII masking
         with self.tracer.span(trace, "guardrails.escalate", reason=message):
             out = Outcome("escalated", message, iterations, tool_calls, cost, trace, history=stm.messages)
             if self.on_escalate:

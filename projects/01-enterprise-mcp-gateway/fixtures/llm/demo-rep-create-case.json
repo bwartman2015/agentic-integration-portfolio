@@ -1,0 +1,36 @@
+{
+  "description": "Demo: a cs-rep (no crm.write) asks to open a case; the permission guardrail denies create_case.",
+  "responses": [
+    {
+      "type": "tool",
+      "tool": "search_accounts",
+      "args": {
+        "query": "Summit Contractors"
+      },
+      "reasoning": "Resolve the account first."
+    },
+    {
+      "type": "tool",
+      "tool": "get_sales_order",
+      "args": {
+        "sales_order": "SO-104233"
+      },
+      "reasoning": "Confirm the order the case is about."
+    },
+    {
+      "type": "tool",
+      "tool": "create_case",
+      "args": {
+        "account_id": "ACCT-1002",
+        "subject": "Late delivery SO-104233",
+        "summary": "Dock closed on 2026-11-05; new ETA 2026-11-10."
+      },
+      "reasoning": "Open the case."
+    },
+    {
+      "type": "answer",
+      "reasoning": "create_case was denied; explain and hand off.",
+      "answer": "I couldn't open the case for Summit Contractors LLC (ACCT-1002) about SO-104233: creating a case needs the crm.write permission, which your role doesn't have. Please ask a CS lead to open a 'late delivery' case."
+    }
+  ]
+}

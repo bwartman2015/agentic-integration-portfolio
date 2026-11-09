@@ -1,0 +1,26 @@
+{
+  "description": "Eval wismo-basic: ReAct one tool at a time (order, then tracking), then a cited answer.",
+  "responses": [
+    {
+      "type": "tool",
+      "tool": "get_sales_order",
+      "args": {
+        "sales_order": "SO-104233"
+      },
+      "reasoning": "Read the order first."
+    },
+    {
+      "type": "tool",
+      "tool": "track_shipment",
+      "args": {
+        "sales_order": "SO-104233"
+      },
+      "reasoning": "Now the carrier tracking."
+    },
+    {
+      "type": "answer",
+      "reasoning": "Order and tracking are enough.",
+      "answer": "SO-104233 for Summit Contractors LLC shipped 2026-10-29 with Granite Freight Lines on SHP-55012. Delivery was attempted on 2026-11-05 but the consignee's dock was closed; the new ETA is 2026-11-10, 3 business days past the promised 2026-11-05 under the 5-business-day LTL SLA [customer-service-policy.md#0]. Because it is more than 2 business days late, notify Logistics and the account rep [escalation-matrix.md#0]."
+    }
+  ]
+}

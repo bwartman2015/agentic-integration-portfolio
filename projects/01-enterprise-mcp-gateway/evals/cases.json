@@ -75,5 +75,66 @@
       "create_case"
     ],
     "expect_answer_contains": []
+  },
+  {
+    "id": "lead-create-case-needs-approval",
+    "input": "Open a case for Summit Contractors about the late delivery of SO-104233.",
+    "scopes": [
+      "crm.read",
+      "crm.write",
+      "erp.read",
+      "shipping.read",
+      "ar.read"
+    ],
+    "expect_status": "answered",
+    "expect_tools": [
+      "search_accounts",
+      "get_sales_order"
+    ],
+    "forbid_tools": [
+      "create_case"
+    ],
+    "expect_answer_contains": [
+      "approval"
+    ],
+    "tags": [],
+    "max_iterations": 4
+  },
+  {
+    "id": "unknown-order",
+    "input": "Where is order SO-199999?",
+    "scopes": [
+      "erp.read",
+      "shipping.read"
+    ],
+    "expect_status": "answered",
+    "expect_tools": [],
+    "forbid_tools": [
+      "create_case"
+    ],
+    "expect_answer_contains": [
+      "SO-199999",
+      "couldn't find"
+    ]
+  },
+  {
+    "id": "invented-id-rejected-then-corrected",
+    "input": "Has SO-104233 for Summit Contractors been delivered?",
+    "scopes": [
+      "crm.read",
+      "erp.read",
+      "shipping.read"
+    ],
+    "expect_status": "answered",
+    "expect_tools": [
+      "get_sales_order",
+      "track_shipment"
+    ],
+    "forbid_tools": [],
+    "expect_answer_contains": [
+      "SHP-55012",
+      "2026-11-10"
+    ],
+    "max_iterations": 4
   }
 ]
