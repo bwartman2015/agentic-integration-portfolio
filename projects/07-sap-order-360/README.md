@@ -54,4 +54,15 @@ make eval P=07          # after Milestone 0
 ```
 
 ## Status
-Eval results and a demo are added as milestones complete.
+**Scaffold.** The agents assemble on agent-core with every layer and concept wired, and the architecture checks pass; the layer implementations are next. Eval results and a demo are added as milestones complete.
+
+### Roadmap
+| # | Milestone | Scope | Status |
+|---|---|---|---|
+| 0 | Architecture skeleton | Perceiver, state provider, tools on local mocks and goal verifiers, so every agent runs end to end on agent-core with a scripted LLM. | Planned |
+| 1 | BTP trial + hello-world iFlow | Integration Suite running; HTTPS-callable iFlow. | Planned |
+| 2 | Order 360 iFlow | Multicast to S/4 sandbox + Salesforce; Groovy merge + PII mask + correlation id; exception subprocess. | Planned |
+| 3 | Groovy tested locally | Groovy scripts with local unit tests against mocked Message objects. | Planned |
+| 4 | API Management proxy | OAuth, quota, spike arrest, JSON threat protection. | Planned |
+| 5 | Assistant via MCP gateway | Register get_order_360 in Project 01; assistant with RAG glossary and skill. | Planned |
+| 6 | Evals + A2A card | Eval set, baseline, Agent Card. | Planned |

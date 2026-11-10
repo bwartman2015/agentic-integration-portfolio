@@ -55,4 +55,15 @@ make eval P=04          # after Milestone 0
 ```
 
 ## Status
-Eval results and a demo are added as milestones complete.
+**Scaffold.** The agents assemble on agent-core with every layer and concept wired, and the architecture checks pass; the layer implementations are next. Eval results and a demo are added as milestones complete.
+
+### Roadmap
+| # | Milestone | Scope | Status |
+|---|---|---|---|
+| 0 | Architecture skeleton | Perceiver, state provider, tools on local mocks and goal verifiers, so every agent runs end to end on agent-core with a scripted LLM. | Planned |
+| 1 | Synthetic finance data + mock API | Generator for POs, receipts, supplier invoices (planted variances, duplicates) and remittances (short pays, deduction codes). | Planned |
+| 2 | AP exception agent | Deterministic three_way_match + duplicate check tools; AP agent with RAG and skills. | Planned |
+| 3 | AR cash application agent | Deterministic remittance matcher; AR agent with deduction coding. | Planned |
+| 4 | Finance Ops Manager orchestration | Manager agent delegating to AP/AR via agent_as_tool; combined summary. | Planned |
+| 5 | Segregation of duties + evals | Tests proving agents cannot post or pay; eval set + baseline. | Planned |
+| 6 | A2A card + dashboard | Publish the AR Agent Card; Grafana finance ops dashboard. | Planned |

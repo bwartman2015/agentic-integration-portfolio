@@ -61,6 +61,18 @@ make eval P=01          # scripted evals vs evals/baseline.json
 ```
 
 ## Status
+### Roadmap
+| # | Milestone | Scope | Status |
+|---|---|---|---|
+| 0 | Architecture skeleton | Perceiver, state provider, tools on local mocks and goal verifiers, so the agent runs end to end on agent-core with a scripted LLM | Done |
+| 1 | MCP server skeleton | Gateway MCP server with one tool in Docker Compose, reachable from MCP Inspector | Done |
+| 2 | Connectors | Salesforce (OAuth), SAP sandbox (API key), mock carrier and mock AR APIs behind gateway tools | Done |
+| 3 | Authentication | Keycloak realm with `cs-rep` and `cs-lead` clients; the gateway validates JWTs | Done |
+| 4 | Authorization with OPA | Per-tool scope policies and a data rule (reps only see accounts in their region) | Done |
+| 5 | Guardrails, audit, approvals | Rate limits, PII masking, audit table and `/audit` report; n8n approval webhook for `create_case`, denying on timeout | Planned |
+| 6 | Copilot on the gateway, long-term memory | The copilot calls the gateway through an MCP client; RAG and skills; Postgres + pgvector memory | Planned |
+| 7 | Evals and A2A card | Real-model eval baseline (Ollama); publish the copilot's Agent Card | Planned |
+
 **Milestone 4 (authorization with OPA): done.** A valid token is no longer enough. Open Policy Agent 1.22.2 runs in Docker Compose and decides every tool call from the scopes and regions in the caller's Keycloak token; the gateway enforces the decision and denies when it cannot get one. Policy: [`policy/gateway.rego`](policy/gateway.rego). Details: [gateway/README.md](gateway/README.md#authorization-opa).
 
 | Rule | Effect |

@@ -54,4 +54,14 @@ make eval P=06          # after Milestone 0
 ```
 
 ## Status
-Eval results and a demo are added as milestones complete.
+**Scaffold.** The agents assemble on agent-core with every layer and concept wired, and the architecture checks pass; the layer implementations are next. Eval results and a demo are added as milestones complete.
+
+### Roadmap
+| # | Milestone | Scope | Status |
+|---|---|---|---|
+| 0 | Architecture skeleton | Perceiver, state provider, tools on local mocks and goal verifiers, so every agent runs end to end on agent-core with a scripted LLM. | Planned |
+| 1 | Jenkins + Spectral | Local Jenkins runs the Spectral governance ruleset on every push. | Planned |
+| 2 | Tests + JFrog | Unit/property tests for the services; image pushed to JFrog free tier. | Planned |
+| 3 | Test generation agent | Claude Code headless provider; test-gen micro agent. | Planned |
+| 4 | Review agent + breaking-change gate | Review micro agent with checklist skill; oasdiff gate. | Planned |
+| 5 | PR Orchestrator + evals | Manager orchestration; eval set; metrics dashboard. | Planned |

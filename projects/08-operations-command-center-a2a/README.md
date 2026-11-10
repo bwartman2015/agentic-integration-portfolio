@@ -54,4 +54,15 @@ make eval P=08          # after Milestone 0
 ```
 
 ## Status
-Eval results and a demo are added as milestones complete.
+**Scaffold.** The agents assemble on agent-core with every layer and concept wired, and the architecture checks pass; the layer implementations are next. Eval results and a demo are added as milestones complete.
+
+### Roadmap
+| # | Milestone | Scope | Status |
+|---|---|---|---|
+| 0 | Architecture skeleton | Perceiver, state provider, tools on local mocks and goal verifiers, so every agent runs end to end on agent-core with a scripted LLM. | Planned |
+| 1 | Local mesh with stub specialists | Serve two FakeLLM specialists over A2A; Command Center discovers cards and delegates. | Planned |
+| 2 | serve_mesh.py | Launch real agents from Projects 02, 03, 04, 05, 07 as A2A servers; write a2a/registry.json. | Planned |
+| 3 | Delegation + resolution packages | Command Center with dispute skill and playbook RAG; case store; record_resolution. | Planned |
+| 4 | Stitched tracing | Collect specialist trace ids from task metadata into one case timeline view. | Planned |
+| 5 | Evals | Cross-functional eval scenarios and baseline. | Planned |
+| 6 | A2A spec conformance | Verify against the current A2A specification; optionally adopt the official SDK. | Planned |

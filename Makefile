@@ -51,6 +51,9 @@ endif
 
 check: test arch-check
 
+# Optional machine-local targets (not part of the repository).
+-include local.mk
+
 # Docker Compose per project (Docker Desktop). Projects without a docker-compose.yml are skipped.
 define for_compose_projects
 	@test -n "$(P)" || (echo "usage: make $@ P=01" && exit 1)

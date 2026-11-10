@@ -40,7 +40,7 @@ See [docs/AGENTIC_CONCEPTS.md](docs/AGENTIC_CONCEPTS.md) for the concept-by-proj
 agent-core/          framework: 7 layers + 9 concepts, stdlib only, tested
 projects/NN-*/       README, agents (one module per layer), skills/, knowledge/, evals/, a2a/
 docs/                ARCHITECTURE, AGENTIC_CONCEPTS, COMPANY
-scripts/             arch_check.py (architecture conformance)
+scripts/             arch_check.py (architecture conformance), ensure-env.sh
 ```
 
 ## Quick start

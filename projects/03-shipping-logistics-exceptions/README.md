@@ -54,4 +54,15 @@ make eval P=03          # after Milestone 0
 ```
 
 ## Status
-Eval results and a demo are added as milestones complete.
+**Scaffold.** The agents assemble on agent-core with every layer and concept wired, and the architecture checks pass; the layer implementations are next. Eval results and a demo are added as milestones complete.
+
+### Roadmap
+| # | Milestone | Scope | Status |
+|---|---|---|---|
+| 0 | Architecture skeleton | Perceiver, state provider, tools on local mocks and goal verifiers, so every agent runs end to end on agent-core with a scripted LLM. | Planned |
+| 1 | Mock carrier + TMS + generator | FastAPI carrier tracking/POD and TMS rate APIs; generator for 1,000 shipments with planted exceptions and freight invoices. | Planned |
+| 2 | Exception agent read path | Perceiver, tracking/POD/order tools, state provider, RAG over contracts and customer requirements. | Planned |
+| 3 | Actions, approvals, skills | Reroute, notify, claim tools behind n8n approvals; runtime skills. | Planned |
+| 4 | Freight audit agent | Deterministic re-rating function + agent for explanation and dispute packaging. | Planned |
+| 5 | Evals + A2A card | Eval set incl. no-action cases; baseline; Agent Card. | Planned |
+| 6 | Operations dashboard | Grafana: exceptions, time-to-disposition, claims, freight savings. | Planned |

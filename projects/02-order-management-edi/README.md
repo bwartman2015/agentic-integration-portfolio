@@ -54,4 +54,15 @@ make eval P=02          # after Milestone 0
 ```
 
 ## Status
-Eval results and a demo are added as milestones complete.
+**Scaffold.** The agents assemble on agent-core with every layer and concept wired, and the architecture checks pass; the layer implementations are next. Eval results and a demo are added as milestones complete.
+
+### Roadmap
+| # | Milestone | Scope | Status |
+|---|---|---|---|
+| 0 | Architecture skeleton | Perceiver, state provider, tools on local mocks and goal verifiers, so every agent runs end to end on agent-core with a scripted LLM. | Planned |
+| 1 | Parse and acknowledge | Ingest 850s, parse to canonical JSON, generate 997s; synthetic 850 generator. | Planned |
+| 2 | Outbound documents | Generate 855/856/810 from the canonical model and mock ERP state. | Planned |
+| 3 | Rules + anomaly detection | Deterministic rules plus statistical detector over 6 months of synthetic history; ATP mock. | Planned |
+| 4 | Triage agent + n8n approval | Triage agent with skills and RAG; n8n approval workflow; decision flows back via webhook. | Planned |
+| 5 | Partner onboarding copilot | Plan-and-execute mapping drafting with RAG over the implementation guide. | Planned |
+| 6 | Evals, metrics, A2A card | Eval report + baseline; Grafana metrics; publish the triage Agent Card. | Planned |

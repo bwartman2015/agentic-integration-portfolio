@@ -55,4 +55,15 @@ make eval P=05          # after Milestone 0
 ```
 
 ## Status
-Eval results and a demo are added as milestones complete.
+**Scaffold.** The agents assemble on agent-core with every layer and concept wired, and the architecture checks pass; the layer implementations are next. Eval results and a demo are added as milestones complete.
+
+### Roadmap
+| # | Milestone | Scope | Status |
+|---|---|---|---|
+| 0 | Architecture skeleton | Perceiver, state provider, tools on local mocks and goal verifiers, so every agent runs end to end on agent-core with a scripted LLM. | Planned |
+| 1 | Happy path + observability | Three flows on the broker, end-to-end traces, Grafana dashboard. | Planned |
+| 2 | Chaos + DLQs | Chaos injector with 6 scenarios (503, latency, schema drift, bad reference data, expired credential, poison message). | Planned |
+| 3 | Diagnoser + Remediator | Micro agents with state, RAG runbooks and skills. | Planned |
+| 4 | Code-fix path | Schema drift -> quarantine -> Claude Code headless PR -> human merge -> replay. | Planned |
+| 5 | Incident Commander + guardrails | Manager orchestration; blast-radius and security tests; incident reports. | Planned |
+| 6 | Evals + A2A card | Chaos scenarios as evals; baseline; Agent Card. | Planned |
