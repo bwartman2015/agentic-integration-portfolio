@@ -24,6 +24,14 @@ def _common(name: str, llm: LLMProvider) -> dict:
                 checkpointer=Checkpointer(os.environ.get("PROGRESS_DIR", "progress")), tracer=get_tracer())
 
 
+def memory_audience(principal: Principal) -> str:
+    """Long-term memory is partitioned by what a caller may see: an answered question is recalled only
+    for callers with the same scopes and regions, so a lead's answer about a West account never reaches a
+    Central rep's prompt (and a rep's never reaches a caller without the scopes it was built from)."""
+    return (f"scopes={','.join(sorted(principal.scopes))};"
+            f"regions={','.join(sorted(principal.attr('regions')))}")
+
+
 CS_COPILOT_TOOLS = ['search_accounts', 'get_sales_order', 'track_shipment', 'get_open_invoices', 'create_case']
 
 
@@ -31,25 +39,28 @@ def build_cs_copilot(llm: LLMProvider | None = None) -> Agent:
     llm = llm or get_llm()
     tools = build_registry(CS_COPILOT_TOOLS)
     return Agent(name='cs-copilot', perceiver=CaseRequestPerceiver(), tools=tools,
-                 guardrails=get_guardrails(max_iterations=5),
+                 guardrails=get_guardrails(max_iterations=5), memory_audience=memory_audience,
                  verifier=EvidenceBackedAnswerVerifier(known_citations()),
                  **_common('cs-copilot', llm))
 
 
 def cs_copilot_principal() -> Principal:
     """Service identity for cs-copilot. In real runs these scopes come from a verified Keycloak token."""
-    return Principal('cs-copilot', frozenset(['ar.read', 'crm.read', 'crm.write', 'erp.read', 'shipping.read']))
+    return Principal('cs-copilot', frozenset(['ar.read', 'crm.read', 'crm.write', 'erp.read', 'shipping.read']),
+                     {'regions': ['*']})
 
 
-# Human roles the copilot acts for. Milestone 3 replaces these with Keycloak clients (cs-rep, cs-lead).
+# Human roles the copilot acts for, matching the Keycloak clients (keycloak/ridgeline-realm.json): scopes
+# plus the regions claim the policy's data rule reads. cs-rep is a Central-region rep; a lead sees all.
 ROLE_SCOPES = {
     'cs-rep': frozenset(['ar.read', 'crm.read', 'erp.read', 'shipping.read']),
     'cs-lead': frozenset(['ar.read', 'crm.read', 'crm.write', 'erp.read', 'shipping.read']),
 }
+ROLE_REGIONS = {'cs-rep': ('Central',), 'cs-lead': ('*',)}
 
 
 def principal_for_role(role: str) -> Principal:
-    return Principal(role, ROLE_SCOPES[role])
+    return Principal(role, ROLE_SCOPES[role], {'regions': ROLE_REGIONS[role]})
 
 
 BUILDERS = {'cs-copilot': build_cs_copilot}

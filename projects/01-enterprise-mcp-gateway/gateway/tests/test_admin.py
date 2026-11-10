@@ -175,6 +175,22 @@ class LiveCheckSummaryTests(unittest.TestCase):
         self.assertTrue(live_check.summarize("get_open_invoices", {"invoices": [], "count": 0, "total_open": 0.0})[0])
 
 
+class LiveCheckPlanTests(unittest.TestCase):
+    def test_rep_makes_every_call_on_ridgeline_data(self):
+        calls = live_check.plan_calls({"crm": "salesforce", "erp": "seed", "carrier": "carrier_api", "ar": "ar_api"},
+                                      "cs-rep", "SO-000001")
+        self.assertEqual({who for _, _, who in calls}, {"cs-rep"})
+        self.assertEqual(calls[1][1], {"sales_order": "SO-104233"})
+
+    def test_sap_sandbox_orders_have_no_region_so_a_lead_reads_them(self):
+        calls = live_check.plan_calls({"crm": "seed", "erp": "sap_sandbox", "carrier": "carrier_api", "ar": "ar_api"},
+                                      "cs-rep", "SO-000007")
+        self.assertEqual([(tool, who) for tool, _, who in calls],
+                         [("search_accounts", "cs-rep"), ("get_sales_order", "cs-lead"),
+                          ("track_shipment", "cs-lead"), ("get_open_invoices", "cs-rep")])
+        self.assertEqual(calls[1][1], {"sales_order": "SO-000007"})
+
+
 class TokenToolTests(unittest.IsolatedAsyncioTestCase):
     async def test_client_credentials_request_and_shape_check(self):
         from ridgeline_gateway.admin.token import fetch_token

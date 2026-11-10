@@ -1,6 +1,9 @@
 """REMEMBER (Memory & State): long-term memory. Short-term memory is per run, managed by the loop.
 
 Long-term here: pgvector store of answered questions, account-name aliases (BBO = Big Box Outdoor), and tool sequences that worked.
+
+Answers hold customer data, so recall obeys the access policy: `build.memory_audience` tags every episode
+with the caller's scopes and regions, and the agent loop recalls only episodes with the same tag.
 """
 import os
 

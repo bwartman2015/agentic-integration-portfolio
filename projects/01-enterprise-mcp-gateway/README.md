@@ -48,11 +48,12 @@ flowchart TB
 
 ## Run it
 ```bash
-make up P=01            # from the repo root: create/backfill .env, build + start gateway, Keycloak, mock APIs (Docker Desktop)
-make gateway-test P=01  # gateway + mock-API tests, inside their images' test stages
-make test P=01          # includes wire-level MCP + identity tests while the stack is up (skipped otherwise;
-                        # with live Salesforce/SAP backends add GATEWAY_LIVE_BACKENDS=1)
-make live-check P=01    # call all four tools through MCP as cs-rep (real Keycloak token)
+make up P=01            # from the repo root: create/backfill .env, build + start gateway, Keycloak, OPA, mock APIs (Docker Desktop)
+make opa-test P=01      # Rego unit tests + format check for policy/, in the pinned OPA image
+make gateway-test P=01  # gateway + mock-API tests, inside their images' test stages (real OPA binary)
+make test P=01          # includes wire-level MCP + identity tests while the stack is up (skipped otherwise);
+                        # live Salesforce/SAP backends are detected and the seed-only comparisons skipped
+make live-check P=01    # call all four tools through MCP as cs-rep (real Keycloak token, real OPA decision)
 make token P=01 CLIENT=cs-rep   # print a 5-minute access token, e.g. to paste into MCP Inspector
 make arch-check P=01
 make demo P=01          # offline demo with a scripted LLM; prints every span by layer
@@ -60,11 +61,63 @@ make eval P=01          # scripted evals vs evals/baseline.json
 ```
 
 ## Status
+**Milestone 4 (authorization with OPA): done.** A valid token is no longer enough. Open Policy Agent 1.22.2 runs in Docker Compose and decides every tool call from the scopes and regions in the caller's Keycloak token; the gateway enforces the decision and denies when it cannot get one. Policy: [`policy/gateway.rego`](policy/gateway.rego). Details: [gateway/README.md](gateway/README.md#authorization-opa).
+
+| Rule | Effect |
+|---|---|
+| Per-tool scopes | Each tool needs its own scope (`search_accounts` → `crm.read`, `get_sales_order` → `erp.read`, `track_shipment` → `shipping.read`, `get_open_invoices` → `ar.read`, `create_case` → `crm.write`). A tool the policy does not know is denied |
+| Restricted changes | Pricing, credit-limit and payment-term changes are denied for everyone |
+| Region data rule | Reps only see accounts in their region, and the orders, shipments and invoices of those accounts. `cs-rep` is a Central-region rep; `cs-lead` sees every region |
+| Unknown region | A record with no Ridgeline account (every SAP sandbox order) is denied to reps and visible to leads only |
+
+An unauthorized call gets a clear MCP tool error, for example:
+```text
+cs-rep           create_case        Access denied: cs-rep lacks scope crm.write for create_case.
+p01-expiry-test  search_accounts    Access denied: p01-expiry-test lacks scope crm.read for search_accounts.
+cs-rep           get_open_invoices  ACCT-1003 (Pinecrest Hardware, West)
+                                    Access denied: this record belongs to an account outside your region
+                                    (cs-rep may see: Central). Ask a CS lead.
+cs-rep           search_accounts    "Pinecrest"  ->  {"matches": [], "hidden_out_of_region": 1}
+cs-lead          get_open_invoices  ACCT-1003    ->  1 open invoice
+```
+
+**Tradeoff: "access denied" discloses that a record exists.** A rep who asks for an order outside their region learns that the order is real. That is deliberate here: reps are internal users, the message tells them who can help, and the copilot can hand the request to a CS lead instead of telling a customer the order does not exist. A gateway serving external callers should answer "not found" instead. A record that does not exist is still "not found" for everyone. Search goes one step further: `hidden_out_of_region` counts the matches a rep may not see, so a rep can learn that an account with a given name exists in another region. That is accepted for internal reps for the same reason, and the Milestone 5 rate limits bound how fast anyone can probe it.
+
+| Authorization (Milestone 4) | What works now |
+|---|---|
+| Guardrails | Every `tools/call` is checked twice in `GatewayServer.call_tool`, both before anything is returned:<br>• **the call:** `{principal, tool, args}` → scope rule and restricted-change rule;<br>• **the data:** the record's account is resolved to its CRM region → region rule.<br>A tool that returns without asking for the data check is refused. The principal comes only from the verified token.<br>**Fail closed:** OPA unreachable, slower than 2 s, or answering anything but a well-formed decision means deny; the gateway will not start without `OPA_URL`; a CRM failure while resolving a region returns no data |
+| MCP | Denials are ordinary tool errors (`isError: true`) with text built from the policy's reason code. `tools/list` shows a caller only the tools its scopes cover: `cs-rep` sees the four read tools, a `crm.read`-only client sees `search_accounts`, a client without scopes sees none. Call-time enforcement is the control; a hidden tool called directly is still denied |
+| Multi-Agent / Orchestration | Each agent identity has its own scopes and a signed `regions` claim (a mapper on its Keycloak client). The scope-less `p01-expiry-test` client is denied every tool, as Milestone 3 promised |
+| OPA hardening | Digest-pinned static image on its own internal network that only the gateway joins; read-only, all capabilities dropped; its API answers only the two decision queries and `/health` (`policy/system_authz.rego`), so policy and data cannot be read or replaced over the network; decision logging off |
+| Observe | The call log line adds `regions`, `policy_ms`, outcome `denied` with `policy_reason` (`missing_scope`, `out_of_region`, `region_unknown`, `restricted_change`, `policy_unavailable`, ...) and `hidden_out_of_region` for filtered searches. Still no argument values |
+| Copilot (Guardrails, State) | The copilot's policy hook applies the same policy: through OPA when `OPA_URL` is set (deny on error), otherwise an offline copy of the rules that reads the same `policy/data.json`. One decision table (`policy/decision_cases.json`, 55 cases) is run against both the Rego and the copy, so they cannot drift. The state snapshot injected into the prompt is filtered by region too |
+| Memory | Long-term memory is partitioned by audience: an answered question is tagged with the caller's scopes and regions and recalled only for a caller with the same ones, so a lead's answer about a West account never reaches a Central rep's prompt. Untagged items are not recalled |
+| agent-core | `Principal.attributes` (here `regions`), `EvalCase.attributes` and the opt-in `Agent.memory_audience` recall filter, each with tests |
+| RAG, Skills | New `knowledge/data-access-policy.md`; both skills say to stop and escalate to a CS lead on a region denial |
+| Tests | **Rego unit tests** (`make opa-test`, plus `opa fmt`): 19 tests covering every tool with and without its scope, unknown and restricted tools, region match / mismatch / missing / unknown, the lead, `allowed_tools`, OPA's own API lock-down and the shared decision table.<br>**Gateway tests** against a real OPA binary serving the committed policy (in the image's test stage): scope and region rules per tool, search filtering, unknown regions, not-found stays not-found, OPA down / failing between the two checks / malformed answers, a tool that skips the data check, `tools/list` per client, identity cannot be supplied in arguments.<br>**Wire tests** with real Keycloak tokens and the stack's OPA: no-scope client sees no tools and is denied all four; the `crm.read`-only client sees and reaches one; `cs-rep` cannot see or call a create-style tool, is denied Pinecrest's records and gets filtered search results; `cs-lead` reads them.<br>**Copilot tests:** decision-table parity, policy data vs. the copilot's tools and the Keycloak realm, region filtering in state, OPA mode failing closed |
+
+Verified:
+- `make opa-test`: 19/19 Rego tests pass in the pinned OPA image; `opa fmt` is clean.
+- `make gateway-test`: 135 gateway tests (against a real OPA binary) + 9 mock-API tests.
+- `REQUIRE_GATEWAY=1 make test P=01` on the default stack (seed CRM/ERP): 74 tests, none skipped, with real Keycloak tokens and the stack's OPA.
+- The same command on the live stack (Salesforce + SAP sandbox, detected automatically): 74 tests; 3 seed-only comparisons skipped.
+- `make eval P=01`: 10/10, no regression against `evals/baseline.json`.
+- `make live-check` on the live stack, each tool called as the least-privileged client that may read the record (SAP sandbox orders have no Ridgeline account, so only the lead may read them):
+```text
+authenticated as cs-lead, cs-rep (Keycloak client credentials)
+tool               client   backend      result  summary   (backend = configured in .env)
+search_accounts    cs-rep   salesforce   ok      1 match(es): Summit Contractors LLC (ACCT-1002)
+get_sales_order    cs-lead  sap_sandbox  ok      SO-000001 status=Completed total=52.65 USD
+track_shipment     cs-lead  carrier_api  ok      1 shipment(s), first status=EXCEPTION
+get_open_invoices  cs-rep   ar_api       ok      1 open invoice(s), total_open=8370.0
+all tools returned data
+```
+
 **Milestone 3 (authentication): done.** Every `/mcp` call now needs a Keycloak access token. Keycloak 26.8.2 runs in Docker Compose with realm `ridgeline`, which has two agent clients using the OAuth 2.0 client credentials flow:
 - **`cs-rep`:** `crm.read erp.read shipping.read ar.read`
 - **`cs-lead`:** the same four, plus `crm.write`
 
-The gateway validates every token itself and answers **401** when there is no token or the token is expired, tampered, signed by the wrong key or issued for a different audience. The 401 carries a `WWW-Authenticate` header that points to the RFC 9728 metadata naming Keycloak, as the MCP authorization spec expects. Per-tool authorization by scope is Milestone 4 (OPA). Until then any authenticated client can call every tool. That includes the test-only `p01-expiry-test` client, which has no scopes; Milestone 4 must deny it everything. Next: Milestone 4.
+The gateway validates every token itself and answers **401** when there is no token or the token is expired, tampered, signed by the wrong key or issued for a different audience. The 401 carries a `WWW-Authenticate` header that points to the RFC 9728 metadata naming Keycloak, as the MCP authorization spec expects. Per-tool authorization by scope followed in Milestone 4 (OPA, above), which also denies the scope-less test client `p01-expiry-test` every tool.
 
 | Identity (Milestone 3) | What works now |
 |---|---|
@@ -176,10 +229,10 @@ gateway log
 
 **Anti-hallucination guardrail: no invented IDs.** The verifier rejects an answer if any order, PO, invoice, shipment, account or case ID in it (`SO-`, `PO-`, `INV-`, `SHP-`, `ACCT-`, `CASE-` plus digits, any length) does not appear in the request or in a successful tool result. The same goes for money: every dollar amount must equal a number a tool returned, because deterministic code computes totals and the model only quotes them. Every entity in the request must be both addressed and looked up by a tool (a "not found" lookup counts; a policy citation never backs a claim about a customer's order). Every `[source.md#n]` citation must be a real knowledge chunk, and policy questions need a tool result or a valid citation. A rejected answer goes back to the reasoner with the reason, inside the iteration budget; the `invented-id-rejected-then-corrected` eval shows that loop. These checks catch fabricated identifiers and amounts; they do not prove every sentence true, which is what the real-model evals are for.
 
-### Evals (scripted LLM, Milestone 0 baseline; unchanged in Milestone 1)
+### Evals (scripted LLM; baseline updated in Milestone 4: 8 → 10 cases)
 Scripted evals replay a fixed model script per case (`fixtures/llm/`), so they test the harness: tool selection, guardrails, verifier and citations, not model judgment. The real-model baseline (`evals/baseline.ollama.json`) arrives in Milestone 7.
 
-Success 100% · tool selection 100% · avg cost $0.0026 (scripted) · avg iterations 2.5
+Success 100% · tool selection 100% · avg cost $0.0027 (scripted) · avg iterations 2.6
 
 | Case | Result | Tools used | What it shows |
 |---|---|---|---|
@@ -191,6 +244,8 @@ Success 100% · tool selection 100% · avg cost $0.0026 (scripted) · avg iterat
 | lead-create-case-needs-approval | PASS | search_accounts, get_sales_order | A lead holds `crm.write`, but the approval gate fails closed |
 | unknown-order | PASS | - | The ERP "not found" error reaches the model, which says so instead of guessing |
 | invented-id-rejected-then-corrected | PASS | get_sales_order, track_shipment | Verifier rejects an invented shipment ID; the model looks it up and corrects itself |
+| out-of-region-order-denied | PASS | - | A Central rep asks about a West account's order: the policy denies the order and the tracking lookup, and the agent escalates to a CS lead citing `data-access-policy.md` instead of working around it (Milestone 4) |
+| lead-cross-region-allowed | PASS | get_sales_order, track_shipment | The same question from a CS lead, who sees every region (Milestone 4) |
 
 Oversized input (over 4,000 characters) is rejected by the input guardrail before any model call; that is covered by a unit test rather than an eval case.
 

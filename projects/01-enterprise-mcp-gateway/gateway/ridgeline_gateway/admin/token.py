@@ -20,7 +20,8 @@ import httpx2
 from ..connectors.base import ConnectorError, HttpConnector
 
 CLIENT_SECRET_ENV = {"cs-rep": "CS_REP_CLIENT_SECRET", "cs-lead": "CS_LEAD_CLIENT_SECRET",
-                     "p01-expiry-test": "P01_EXPIRY_TEST_CLIENT_SECRET"}
+                     "p01-expiry-test": "P01_EXPIRY_TEST_CLIENT_SECRET",
+                     "p01-crm-only-test": "P01_CRM_ONLY_TEST_CLIENT_SECRET"}
 _JWT_SHAPE = re.compile(r"^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$")
 
 

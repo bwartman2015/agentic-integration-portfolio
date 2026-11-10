@@ -1,7 +1,11 @@
 # Ridgeline MCP gateway. Build context: the project root (projects/01-enterprise-mcp-gateway/).
-# Stages: base (pinned deps + code) -> test (adds tests; `make gateway-test`) -> runtime (default, last).
+# Stages: base (pinned deps + code) -> test (adds tests, the policy and the pinned OPA binary that
+# evaluates it; `make gateway-test`) -> runtime (default, last; has neither).
 # Reproducible: base image pinned by digest; every Python package pinned with hashes in requirements.lock
 # (regenerate with ./lock-deps.sh gateway).
+# OPA 1.22.2, same digest as docker-compose.yml: the tests run the committed policy for real.
+FROM openpolicyagent/opa:1.22.2-static@sha256:f4e9be2903cd1377619366957446525fd8235a37dae4aae833224f0f6b017094 AS opa
+
 FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -25,6 +29,8 @@ ENV GATEWAY_HOST=0.0.0.0 \
     GATEWAY_INTERNAL_PORT=8000
 
 FROM base AS test
+COPY --from=opa /opa /usr/local/bin/opa
+COPY policy policy
 COPY gateway/tests gateway/tests
 USER 10001
 CMD ["python", "-m", "unittest", "discover", "-s", "gateway/tests", "-v"]

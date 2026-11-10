@@ -94,7 +94,7 @@ class StateTests(unittest.TestCase):
         return CaseRequestPerceiver().perceive("Where is SO-104233 for Summit Contractors?", principal)
 
     def test_snapshot_is_filtered_by_scope(self):
-        crm_only = self.state.snapshot(self.percept(Principal("r", frozenset({"crm.read"}))))
+        crm_only = self.state.snapshot(self.percept(Principal("r", frozenset({"crm.read"}), {"regions": ["Central"]})))
         self.assertEqual(crm_only["accounts"][0]["account_id"], "ACCT-1002")
         for key in ("orders", "open_orders", "shipments", "open_invoices"):
             self.assertNotIn(key, crm_only)

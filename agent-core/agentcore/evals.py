@@ -5,6 +5,7 @@ cases.json:
   {"id": "order-status-basic",
    "input": "What's the status of Acme's latest order?",
    "scopes": ["crm.read", "erp.read"],
+   "attributes": {"regions": ["Central"]},                     # optional Principal.attributes
    "expect_status": "answered",
    "expect_tools": ["search_accounts", "get_sales_order"],   # must be called (any order)
    "forbid_tools": ["create_task"],                            # must NOT be called
@@ -37,6 +38,7 @@ class EvalCase:
     max_cost_usd: float | None = None
     max_iterations: int | None = None
     tags: list[str] = field(default_factory=list)
+    attributes: dict[str, list[str]] = field(default_factory=dict)   # Principal.attributes, e.g. regions
 
 
 @dataclass
@@ -105,7 +107,7 @@ def run_evals(agent_factory: Callable[[EvalCase], Any], cases: list[EvalCase], a
     for case in cases:
         agent = agent_factory(case)
         try:
-            out = agent.run(case.input, Principal(f"eval:{case.id}", frozenset(case.scopes)))
+            out = agent.run(case.input, Principal(f"eval:{case.id}", frozenset(case.scopes), case.attributes))
         except Exception as e:
             results.append(CaseResult(case.id, False, [f"crashed: {type(e).__name__}: {e}"], "error", [], 0.0, 0, False))
             continue

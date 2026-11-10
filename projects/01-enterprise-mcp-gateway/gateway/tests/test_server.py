@@ -15,6 +15,7 @@ import httpx2
 
 from ridgeline_gateway.config import load_settings
 from ridgeline_gateway.connectors import build_connectors
+from opa_fixture import use_policy
 from ridgeline_gateway.server import (ACCOUNT_ID_PATTERN, SALES_ORDER_PATTERN, GatewayServer, _log_call,
                                       configure_logging, mcp, set_connectors, transport_security)
 
@@ -35,9 +36,13 @@ def use_seed_backends() -> None:
 
 
 class ToolContractTests(unittest.IsolatedAsyncioTestCase):
+    """Tool contracts, called as cs-lead (every scope, every region) so that policy never interferes.
+    Authorization itself is covered in test_policy.py."""
+
     def setUp(self) -> None:
         reset_systems()
         use_seed_backends()
+        use_policy(self)
 
     async def _call(self, name: str, args: dict):
         async with Client(mcp) as client:
@@ -100,10 +105,14 @@ class ToolContractTests(unittest.IsolatedAsyncioTestCase):
             return a
 
         server.add_tool(lambda b: b, name="second")
-        for srv in (mcp, server):
-            async with Client(srv) as client:
-                for tool in (await client.list_tools()).tools:
-                    self.assertIs(tool.input_schema.get("additionalProperties"), False, tool.name)
+        async with Client(mcp) as client:
+            for tool in (await client.list_tools()).tools:
+                self.assertIs(tool.input_schema.get("additionalProperties"), False, tool.name)
+        # tools/list hides tools the policy does not cover, so the new server is checked at the registry.
+        registered = server._tool_manager.list_tools()
+        self.assertEqual(sorted(t.name for t in registered), ["first", "second"])
+        for tool in registered:
+            self.assertIs(tool.parameters.get("additionalProperties"), False, tool.name)
 
     async def test_known_order_returns_structured_seeded_data(self):
         result = await self._call("get_sales_order", {"sales_order": "SO-104233"})
@@ -161,6 +170,7 @@ class CallLoggingTests(unittest.IsolatedAsyncioTestCase):
     async def _logged(self, name: str, args: dict) -> dict:
         reset_systems()
         use_seed_backends()
+        use_policy(self)
         with self.assertLogs("ridgeline.gateway", logging.INFO) as cm:
             async with Client(mcp) as client:
                 await client.call_tool(name, args)
@@ -198,6 +208,7 @@ class CallLoggingTests(unittest.IsolatedAsyncioTestCase):
             return httpx2.Response(503, json={"detail": "down"})
         settings = load_settings({"AR_BACKEND": "http", "AR_API_TOKEN": "t" * 20})
         set_connectors(build_connectors(settings, transport=httpx2.MockTransport(boom)))
+        use_policy(self)
         try:
             with self.assertLogs("ridgeline.gateway", logging.INFO) as cm:
                 async with Client(mcp) as client:

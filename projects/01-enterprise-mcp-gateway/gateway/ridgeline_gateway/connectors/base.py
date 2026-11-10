@@ -7,8 +7,10 @@ credentials never reach the MCP client or the log.
 """
 from __future__ import annotations
 
+import contextlib
 import contextvars
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 from urllib.parse import urlsplit
@@ -63,6 +65,17 @@ def note_backend(backend: str) -> None:
     info = _upstream.get()
     if info is not None:
         info.backend = backend
+
+
+@contextlib.contextmanager
+def side_channel() -> Iterator[None]:
+    """Requests made inside are not recorded as the tool's backend call: policy queries and the CRM/ERP
+    lookups that resolve a record's region. The call log keeps naming the system the tool is for."""
+    token = _upstream.set(None)
+    try:
+        yield
+    finally:
+        _upstream.reset(token)
 
 
 @dataclass

@@ -1,4 +1,4 @@
-# Project 01: Ridgeline enterprise MCP gateway + Keycloak + mock carrier and AR APIs.
+# Project 01: Ridgeline enterprise MCP gateway + Keycloak + OPA + mock carrier and AR APIs.
 #   make up P=01             create/backfill .env (random secrets), build, start, wait until healthy
 #   make gateway-test P=01   build the images' test stages and run the gateway and mock-API tests
 #   make live-check P=01     call all four tools through MCP as cs-rep (real Keycloak token)
@@ -10,7 +10,9 @@
 # Images are local builds only (pull_policy), never pulled from a registry under these names; Keycloak is
 # pinned by digest. Agent client secrets reach Keycloak (to register the clients) and the one-off `ops`
 # container only, never the gateway, which needs only Keycloak's public signing keys.
-# OPA, Postgres and n8n join in M4-M6.
+# OPA (Milestone 4) sits on its own internal network that only the gateway joins, serves the read-only
+# policy/ directory, and its API answers nothing but the two decision queries (policy/system_authz.rego).
+# Postgres and n8n join in M5-M6.
 name: ridgeline-p01
 
 services:
@@ -19,9 +21,9 @@ services:
       context: .
       dockerfile: gateway/Dockerfile
       target: runtime
-    image: ridgeline/mcp-gateway:0.3.0
+    image: ridgeline/mcp-gateway:0.4.0
     pull_policy: build
-    networks: [edge, backend]
+    networks: [edge, backend, policy]
     ports:
       # Published on loopback only (no TLS in this local stack).
       - "127.0.0.1:${GATEWAY_PORT:-8765}:8000"
@@ -34,6 +36,9 @@ services:
       OIDC_JWKS_URL: http://keycloak:8080/realms/ridgeline/protocol/openid-connect/certs
       OIDC_AUDIENCE: ridgeline-gateway
       GATEWAY_PUBLIC_URL: http://localhost:${GATEWAY_PORT:-8765}/mcp
+      # Authorization (Milestone 4): every call is decided by OPA; no answer in time means deny.
+      OPA_URL: http://opa:8181
+      OPA_TIMEOUT_S: "2"
       CRM_BACKEND: ${CRM_BACKEND:-seed}
       ERP_BACKEND: ${ERP_BACKEND:-seed}
       CARRIER_BACKEND: ${CARRIER_BACKEND:-http}
@@ -54,6 +59,8 @@ services:
       ar-api:
         condition: service_healthy
       keycloak:
+        condition: service_healthy
+      opa:
         condition: service_healthy
     read_only: true
     tmpfs:
@@ -128,6 +135,7 @@ services:
       CS_REP_CLIENT_SECRET: ${CS_REP_CLIENT_SECRET:?run make up P=01 to generate .env}
       CS_LEAD_CLIENT_SECRET: ${CS_LEAD_CLIENT_SECRET:?run make up P=01 to generate .env}
       P01_EXPIRY_TEST_CLIENT_SECRET: ${P01_EXPIRY_TEST_CLIENT_SECRET:?run make up P=01 to generate .env}
+      P01_CRM_ONLY_TEST_CLIENT_SECRET: ${P01_CRM_ONLY_TEST_CLIENT_SECRET:?run make up P=01 to generate .env}
     volumes:
       - ./keycloak/ridgeline-realm.json:/opt/keycloak/data/import/ridgeline-realm.json:ro
     # Ephemeral database: every (re)start imports the committed realm exactly, with the current .env
@@ -147,10 +155,44 @@ services:
       - no-new-privileges:true
     restart: "no"
 
+  opa:
+    # Open Policy Agent 1.22.2 (static build: one binary, no shell), pinned by digest. The policy decision
+    # point for the gateway: default deny, per-tool scopes and the region data rule (policy/gateway.rego).
+    image: openpolicyagent/opa:1.22.2-static@sha256:f4e9be2903cd1377619366957446525fd8235a37dae4aae833224f0f6b017094
+    command:
+      - run
+      - --server
+      - --addr=0.0.0.0:8181
+      - --authorization=basic        # policy/system_authz.rego: only the decision queries and /health
+      - --log-level=error            # no request logs; decision logging stays off (inputs hold arguments)
+      - /policy/gateway.rego
+      - /policy/system_authz.rego
+      - /policy/data.json
+    networks: [policy]               # internal; shared with the gateway only, not published to the host
+    expose:
+      - "8181"
+    volumes:
+      - ./policy:/policy:ro
+    healthcheck:
+      # No shell or HTTP client in the image: the check evaluates the mounted policy with the same binary,
+      # so a policy that does not compile is unhealthy and the gateway does not start against it. Whether
+      # the server answers is enforced per call: the gateway denies when OPA does not respond.
+      test: ["CMD", "/opa", "eval", "--fail", "-d", "/policy/gateway.rego", "-d", "/policy/system_authz.rego", "-d", "/policy/data.json", "data.ridgeline.gateway.allowed_tools"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 2s
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+
   ops:
     # One-off operator tools (make live-check, make token): same image as the gateway, holds the agent
     # client secrets so the gateway container never does. Not started by `make up` (profile "ops").
-    image: ridgeline/mcp-gateway:0.3.0
+    image: ridgeline/mcp-gateway:0.4.0
     pull_policy: never
     profiles: ["ops"]
     networks: [edge]
@@ -174,4 +216,6 @@ services:
 networks:
   edge: {}
   backend:
+    internal: true
+  policy:
     internal: true

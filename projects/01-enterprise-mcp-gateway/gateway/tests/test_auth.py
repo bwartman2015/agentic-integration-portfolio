@@ -20,6 +20,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from starlette.testclient import TestClient
 
 from mock_systems import reset_systems
+from opa_fixture import use_policy
 from ridgeline_gateway import server
 from ridgeline_gateway.auth import AuthConfig, AuthConfigError, build_verifier
 from ridgeline_gateway.config import load_settings
@@ -68,7 +69,7 @@ class FakeKeycloak:
         now = int(time.time())
         claims = {"iss": ISSUER, "aud": ["ridgeline-gateway"], "azp": "cs-rep", "typ": "Bearer",
                   "scope": "crm.read erp.read shipping.read ar.read", "iat": now, "exp": now + 300,
-                  "sub": "service-account-cs-rep", **overrides}
+                  "sub": "service-account-cs-rep", "regions": ["Central"], **overrides}
         for c in drop:
             claims.pop(c, None)
         signing_key: Any = key or self.keys[kid]
@@ -91,7 +92,16 @@ class VerifierTests(unittest.IsolatedAsyncioTestCase):
         at = await self.verifier.verify_token(self.idp.mint())
         self.assertEqual(at.client_id, "cs-rep")
         self.assertEqual(at.scopes, ["ar.read", "crm.read", "erp.read", "shipping.read"])
-        self.assertEqual(at.claims, {"iss": ISSUER})
+        self.assertEqual(at.claims, {"iss": ISSUER, "regions": ["Central"]})
+
+    async def test_regions_claim_is_read_strictly(self):
+        cases = [(["West", "Central", "West"], ["Central", "West"]), (["*"], ["*"]), ("Central", []), (None, []),
+                 ([7, "East", "<script>", "", "a" * 40, {"x": 1}], ["East"]), ({"Central": True}, [])]
+        for claim, expected in cases:
+            at = await self.verifier.verify_token(self.idp.mint(regions=claim))
+            self.assertEqual(at.claims["regions"], expected, claim)
+        at = await self.verifier.verify_token(self.idp.mint(drop=("regions",)))
+        self.assertEqual(at.claims["regions"], [])
 
     async def test_expired_token(self):
         now = int(time.time())
@@ -214,6 +224,7 @@ class HttpAuthTests(unittest.TestCase):
     def setUp(self) -> None:
         reset_systems()
         server.set_connectors(build_connectors(load_settings({})))
+        use_policy(self, principal=None)          # identity comes from the token, as in production
         self.idp = FakeKeycloak()
         mcp.enable_auth(CONFIG, build_verifier(CONFIG, transport=httpx2.MockTransport(self.idp)))
         self.addCleanup(reset_auth)
@@ -263,6 +274,7 @@ class HttpAuthTests(unittest.TestCase):
         calls = [json.loads(r.getMessage()) for r in cm.records if '"tool_call"' in r.getMessage()]
         self.assertEqual(calls[0]["client_id"], "cs-rep")
         self.assertEqual(calls[0]["scopes"], ["ar.read", "crm.read", "erp.read", "shipping.read"])
+        self.assertEqual(calls[0]["regions"], ["Central"])
         self.assertNotIn(token, "\n".join(r.getMessage() for r in cm.records))
 
     def _session(self, token: str) -> str:
@@ -306,6 +318,18 @@ class StartupTests(unittest.TestCase):
         reason = json.loads(cm.records[-1].getMessage())["reason"]
         self.assertIn("OIDC_ISSUER", reason)
         self.assertIn("never runs unauthenticated", reason)
+        reset_auth()
+
+    def test_gateway_refuses_to_start_without_policy(self):
+        identity = {"OIDC_ISSUER": ISSUER, "OIDC_JWKS_URL": JWKS_URL}
+        for extra in ({}, {"OPA_URL": "opa:8181"}, {"OPA_URL": "http://opa:8181", "OPA_TIMEOUT_S": "0"}):
+            with mock.patch.dict(os.environ, {**identity, **extra}, clear=True), mock.patch.object(mcp, "run") as run, \
+                    self.assertLogs("ridgeline.gateway", logging.ERROR) as cm:
+                with self.assertRaises(SystemExit) as ctx:
+                    server.main()
+            self.assertEqual(ctx.exception.code, 2, extra)
+            run.assert_not_called()
+            self.assertIn("never runs without policy", json.loads(cm.records[-1].getMessage())["reason"])
         reset_auth()
 
 

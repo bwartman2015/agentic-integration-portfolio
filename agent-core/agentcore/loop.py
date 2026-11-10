@@ -59,6 +59,11 @@ class Agent:
     checkpointer: Checkpointer | None = None        # concept 4: persist
     rag_k: int = 4
     on_escalate: Callable[[Outcome], None] | None = None
+    # Who may recall what this run remembers. Set it whenever answers depend on what the caller is
+    # allowed to see: an episode is tagged with the caller's audience key and recalled only for callers
+    # with the same key, so memory cannot carry one caller's data into another caller's prompt.
+    # None = one shared memory (every caller sees the same data).
+    memory_audience: Callable[[Principal], str] | None = None
 
     def __post_init__(self) -> None:
         if self.skills and self.skills.skills and self.tools.get("load_skill") is None:
@@ -79,7 +84,7 @@ class Agent:
 
             # ---- context injection: memory, RAG, skills ----
             with self.tracer.span(trace, "remember.recall") as s:
-                recalled = [m.text for m in self.memory.recall(percept.content)]
+                recalled = [m.text for m in self._recall(percept)]
                 s.attrs["hits"] = len(recalled)
             chunks = []
             if self.retriever:
@@ -144,7 +149,9 @@ class Agent:
                         with self.tracer.span(trace, "remember.write"):
                             self.memory.remember(MemoryItem(
                                 text=f"Q: {percept.content}\nA: {safe}", kind="episode",
-                                meta={"tools": [r.tool for r in results if r.ok], "trace_id": trace}))
+                                meta={"tools": [r.tool for r in results if r.ok], "trace_id": trace,
+                                      **({"audience": self.memory_audience(principal)}
+                                         if self.memory_audience else {})}))
                         return finish(Outcome("answered", safe, iterations, tool_calls,
                                               self.tracer.cost_usd - cost_start, trace,
                                               answered_directly=(iterations == 1 and tool_calls == 0),
@@ -201,6 +208,20 @@ class Agent:
             with self.tracer.span(trace, "harness.checkpoint", status=status):
                 self.checkpointer.save(trace_id=trace, agent=self.name, percept=percept, iteration=iteration,
                                        status=status, history=stm.messages, results=results)
+
+    def _recall(self, percept: Percept, k: int = 3) -> list[MemoryItem]:
+        """Long-term recall, limited to the caller's audience when `memory_audience` is set. The store is
+        asked for progressively more candidates so other audiences' items cannot crowd out the caller's."""
+        if self.memory_audience is None:
+            return self.memory.recall(percept.content, k)
+        audience = self.memory_audience(percept.principal)
+        want = k * 8
+        while True:
+            found = self.memory.recall(percept.content, want)
+            mine = [m for m in found if m.meta.get("audience") == audience]
+            if len(mine) >= k or len(found) < want or want >= 4096:
+                return mine[:k]
+            want *= 4
 
     def _escalate(self, trace, message, iterations, tool_calls, cost, stm) -> Outcome:
         message = self.guardrails.mask(message)        # escalations are output too: same PII masking

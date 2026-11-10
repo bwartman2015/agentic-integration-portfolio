@@ -88,7 +88,7 @@
     {
       "clientId": "cs-rep",
       "name": "Customer service rep agent (read)",
-      "description": "Machine identity for the CS copilot acting for a rep: read-only scopes",
+      "description": "Machine identity for the CS copilot acting for a Central-region rep: read-only scopes; regions claim = Central",
       "enabled": true,
       "protocol": "openid-connect",
       "publicClient": false,
@@ -116,12 +116,29 @@
         "shipping.read",
         "ar.read"
       ],
-      "optionalClientScopes": []
+      "optionalClientScopes": [],
+      "protocolMappers": [
+        {
+          "name": "regions",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-hardcoded-claim-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "regions",
+            "claim.value": "[\"Central\"]",
+            "jsonType.label": "JSON",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
     },
     {
       "clientId": "cs-lead",
       "name": "Customer service lead agent (read + case write)",
-      "description": "Machine identity for the CS copilot acting for a lead: read scopes plus crm.write",
+      "description": "Machine identity for the CS copilot acting for a lead: read scopes plus crm.write; regions claim = * (every region)",
       "enabled": true,
       "protocol": "openid-connect",
       "publicClient": false,
@@ -150,12 +167,29 @@
         "ar.read",
         "crm.write"
       ],
-      "optionalClientScopes": []
+      "optionalClientScopes": [],
+      "protocolMappers": [
+        {
+          "name": "regions",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-hardcoded-claim-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "regions",
+            "claim.value": "[\"*\"]",
+            "jsonType.label": "JSON",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
     },
     {
       "clientId": "p01-expiry-test",
       "name": "Test only: authenticates, never authorized (5-second tokens, no scopes)",
-      "description": "Used by the wire test that proves an expired token gets 401. Has no gateway scopes; Milestone 4 (OPA) must deny it every tool.",
+      "description": "Used by the wire tests: proves an expired token gets 401, and (no scopes, no regions) that OPA denies it every tool.",
       "enabled": true,
       "protocol": "openid-connect",
       "publicClient": false,
@@ -181,6 +215,53 @@
         "gateway-audience"
       ],
       "optionalClientScopes": []
+    },
+    {
+      "clientId": "p01-crm-only-test",
+      "name": "Test only: crm.read and nothing else",
+      "description": "Used by the wire tests that prove a partly scoped agent sees and reaches only its own tool.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "${P01_CRM_ONLY_TEST_CLIENT_SECRET}",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "frontchannelLogout": false,
+      "fullScopeAllowed": false,
+      "redirectUris": [],
+      "webOrigins": [],
+      "attributes": {
+        "use.refresh.tokens": "false",
+        "client_credentials.use_refresh_token": "false",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false",
+        "standard.token.exchange.enabled": "false"
+      },
+      "defaultClientScopes": [
+        "gateway-audience",
+        "crm.read"
+      ],
+      "optionalClientScopes": [],
+      "protocolMappers": [
+        {
+          "name": "regions",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-hardcoded-claim-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "regions",
+            "claim.value": "[\"Central\"]",
+            "jsonType.label": "JSON",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
     }
   ]
 }

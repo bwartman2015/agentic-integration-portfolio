@@ -1,0 +1,16 @@
+{
+  "gateway_policy": {
+    "tool_scopes": {
+      "search_accounts": "crm.read",
+      "get_sales_order": "erp.read",
+      "track_shipment": "shipping.read",
+      "get_open_invoices": "ar.read",
+      "create_case": "crm.write"
+    },
+    "write_tools": [
+      "create_case"
+    ],
+    "restricted_pattern": "(?i)pric|discount|rebate|credit[_ -]?limit|payment[_ -]?terms?",
+    "name_pattern": "^[A-Za-z0-9_.-]{1,64}$"
+  }
+}

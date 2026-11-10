@@ -1,0 +1,26 @@
+{
+  "description": "Eval lead-cross-region-allowed: the same question from a CS lead, who sees every region.",
+  "responses": [
+    {
+      "type": "tool",
+      "tool": "get_sales_order",
+      "args": {
+        "sales_order": "SO-104301"
+      },
+      "reasoning": "Read the order first."
+    },
+    {
+      "type": "tool",
+      "tool": "track_shipment",
+      "args": {
+        "sales_order": "SO-104301"
+      },
+      "reasoning": "Now the carrier tracking."
+    },
+    {
+      "type": "answer",
+      "reasoning": "Order and proof of delivery are enough.",
+      "answer": "SO-104301 for Pinecrest Hardware was delivered to Bend OR on 2026-11-03 on SHP-55107, but the proof of delivery shows only 5 of 10 cartons received. If Pinecrest was invoiced for the full order, open a case with reason \"billed not delivered\" [customer-service-policy.md#0]."
+    }
+  ]
+}

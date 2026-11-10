@@ -16,3 +16,4 @@ trigger: where is, not arrived, hasn't arrived, status of order, tracking
 "SO-104233 shipped 2026-10-29 via Granite Freight Lines (SHP-55012). Tracking shows an exception: delivery attempted 2026-11-05, dock closed. New ETA is 2026-11-10, 3 business days past the 5-business-day LTL SLA [customer-service-policy.md#0]. Next step: open a case 'late delivery' and notify Logistics [escalation-matrix.md#0]."
 # Notes
 Never promise a refund or credit; that needs a human.
+If a lookup is denied because the order or account is outside the rep's region, stop: do not retry or try another tool for the same record. Escalate to a CS lead with the order number and cite the data access policy [data-access-policy.md#0].

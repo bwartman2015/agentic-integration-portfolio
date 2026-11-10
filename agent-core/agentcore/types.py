@@ -2,15 +2,49 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
 
+class FrozenAttributes(dict):
+    """A read-only dict (name -> tuple of strings) that still copies, pickles and serialises like one."""
+
+    def _read_only(self, *args: Any, **kwargs: Any) -> None:
+        raise TypeError("Principal.attributes is read-only")
+
+    __setitem__ = __delitem__ = _read_only
+    clear = pop = popitem = setdefault = update = _read_only
+    __ior__ = _read_only
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        return (FrozenAttributes, (dict(self),))
+
+    def __copy__(self) -> "FrozenAttributes":
+        return self
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> "FrozenAttributes":
+        return self                                     # immutable: keys are str, values tuples of str
+
+
 @dataclass(frozen=True)
 class Principal:
-    """Who the agent is acting for. Scopes come from a verified token (Keycloak JWT in Project 01)."""
+    """Who the agent is acting for. Scopes come from a verified token (Keycloak JWT in Project 01).
+
+    `attributes` holds the token's other verified claims that policy decides on, such as the regions a
+    caller may see: name -> tuple of strings. They are read-only and are not part of the hash."""
     id: str
     scopes: frozenset[str] = frozenset()
+    attributes: Mapping[str, tuple[str, ...]] = field(default_factory=dict, hash=False)
+
+    def __post_init__(self) -> None:
+        clean = {str(k): (v,) if isinstance(v, str) else tuple(str(x) for x in v)
+                 for k, v in dict(self.attributes).items()}
+        object.__setattr__(self, "attributes", FrozenAttributes(clean))
+
+    def attr(self, name: str) -> tuple[str, ...]:
+        """Values of one attribute; empty when the principal does not have it."""
+        return self.attributes.get(name, ())
 
 
 @dataclass

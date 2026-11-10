@@ -18,8 +18,9 @@ in it is accepted. A token that cannot be verified is rejected (401):
     token is rejected until Keycloak is back. A key Keycloak rotated out stays trusted at most that long.
 Rejections are logged with a reason, rate-limited per reason; the token is never logged.
 
-Authorization (which scopes may call which tool) is Milestone 4 (OPA). Milestone 3 records the
-verified client id and scopes on every call log line; tokens are never logged.
+Authorization (which scopes may call which tool, and which regions' data a caller may see) is decided
+by OPA (policy.py, Milestone 4) from the verified client id, scopes and `regions` claim read here.
+Every call log line records them; tokens are never logged.
 """
 from __future__ import annotations
 
@@ -45,6 +46,7 @@ log = logging.getLogger("ridgeline.gateway")
 ALGORITHMS = ["RS256"]
 _CLIENT_ID = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 _SCOPE = re.compile(r"^[A-Za-z0-9._:-]{1,64}$")
+_REGION = re.compile(r"^(?:\*|[A-Za-z][A-Za-z -]{0,31})$")
 
 
 class AuthConfigError(RuntimeError):
@@ -218,9 +220,14 @@ class KeycloakJwtVerifier:
             return self._reject("no_client_id")
         scope = claims.get("scope", "")
         scopes = sorted({s for s in scope.split() if _SCOPE.match(s)}) if isinstance(scope, str) else []
+        # `regions` (Milestone 4): the account regions this agent may see; "*" means all. Anything that
+        # is not a list of plain names is dropped, and a token without regions sees no regional data.
+        raw_regions = claims.get("regions")
+        regions = (sorted({r for r in raw_regions if isinstance(r, str) and _REGION.match(r)})
+                   if isinstance(raw_regions, list) else [])
         return AccessToken(token=token, client_id=client_id, scopes=scopes, expires_at=int(claims["exp"]),
                            subject=claims.get("sub") if isinstance(claims.get("sub"), str) else None,
-                           claims={"iss": claims["iss"]})
+                           claims={"iss": claims["iss"], "regions": regions})
 
 
 def build_verifier(config: AuthConfig, timeout_s: float = 10.0,
@@ -234,4 +241,5 @@ def current_principal() -> dict[str, Any]:
     token = get_access_token()
     if token is None:
         return {}
-    return {"client_id": token.client_id, "scopes": list(token.scopes)}
+    return {"client_id": token.client_id, "scopes": list(token.scopes),
+            "regions": list((token.claims or {}).get("regions") or [])}

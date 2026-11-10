@@ -1,6 +1,9 @@
 """Tests for the nine agentic AI concepts built into agent-core (no network except localhost A2A)."""
+import copy
+import dataclasses
 import json
 import pathlib
+import pickle
 import tempfile
 import unittest
 
@@ -187,6 +190,116 @@ class A2ATests(unittest.TestCase):
                 A2AClient(card.url).send("no token")
         finally:
             server.shutdown()
+
+
+class PrincipalAttributeTests(unittest.TestCase):
+    """Attributes carry verified, non-scope claims (for example the regions a caller may see)."""
+
+    def test_defaults_to_no_attributes_and_stays_hashable(self):
+        p = Principal("rep", frozenset({"crm.read"}))
+        self.assertEqual(p.attributes, {})
+        self.assertEqual(p.attr("regions"), ())
+        self.assertEqual(p, Principal("rep", frozenset({"crm.read"})))
+        self.assertEqual(hash(p), hash(Principal("rep", frozenset({"crm.read"}), {"regions": ["West"]})))
+
+    def test_values_are_normalised_to_tuples_and_cannot_be_changed(self):
+        p = Principal("rep", attributes={"regions": ["Central", "East"], "desk": "inside-sales"})
+        self.assertEqual(p.attr("regions"), ("Central", "East"))
+        self.assertEqual(p.attr("desk"), ("inside-sales",))
+        self.assertNotEqual(p, Principal("rep"))
+        with self.assertRaises(TypeError):
+            p.attributes["regions"] = ("West",)
+
+    def test_principal_can_be_copied_pickled_and_serialised(self):
+        p = Principal("rep", frozenset({"crm.read"}), {"regions": ["Central", "East"]})
+        for clone in (copy.deepcopy(p), copy.copy(p), pickle.loads(pickle.dumps(p))):
+            self.assertEqual(clone, p)
+            self.assertEqual(clone.attr("regions"), ("Central", "East"))
+            with self.assertRaises(TypeError):
+                clone.attributes["regions"] = ("West",)
+        self.assertEqual(dataclasses.asdict(p)["attributes"], {"regions": ("Central", "East")})
+        with self.assertRaises(TypeError):
+            p.attributes.update(regions=("West",))
+        with self.assertRaises(TypeError):
+            del p.attributes["regions"]
+
+    def test_policy_hook_and_eval_cases_see_attributes(self):
+        seen = []
+
+        def policy(principal, tool, args):
+            seen.append(principal.attr("regions"))
+            return "West" in principal.attr("regions"), "region rule"
+
+        from agentcore import Guardrails
+        script = [{"type": "tool", "tool": "get_invoice", "args": {"invoice_id": "INV-3"}},
+                  {"type": "answer", "answer": "INV-3 has 1200 open"}]
+        cases = [EvalCase("in", "open amount on INV-3?", ["ar.read"], attributes={"regions": ["West"]},
+                          expect_tools=["get_invoice"]),
+                 EvalCase("out", "open amount on INV-3?", ["ar.read"], attributes={"regions": ["East"]},
+                          forbid_tools=["get_invoice"])]
+        rep = run_evals(lambda c: Agent(name="t", reasoner=Reasoner(FakeLLM(list(script))), tools=invoice_tools(),
+                                        guardrails=Guardrails(policy=policy)), cases, "finance")
+        self.assertEqual(seen, [("West",), ("East",)])
+        self.assertEqual(rep.success_rate, 1.0, rep.to_markdown())
+
+
+class MemoryAudienceTests(unittest.TestCase):
+    """Long-term memory must not carry one caller's answers into another caller's prompt."""
+
+    @staticmethod
+    def agent(memory, script, audience=None):
+        return Agent(name="t", reasoner=Reasoner(FakeLLM(script)), tools=invoice_tools(), memory=memory,
+                     memory_audience=audience)
+
+    def test_episodes_are_recalled_only_for_the_same_audience(self):
+        from agentcore import SQLiteMemory
+        memory = SQLiteMemory()
+        audience = lambda p: ",".join(p.attr("regions"))          # noqa: E731
+        lead = Principal("lead", frozenset({"ar.read"}), {"regions": ["*"]})
+        rep = Principal("rep", frozenset({"ar.read"}), {"regions": ["Central"]})
+        other_rep = Principal("rep-2", frozenset({"ar.read"}), {"regions": ["Central"]})
+        question = "open amount on invoice INV-3?"
+        self.agent(memory, [{"type": "answer", "answer": "INV-3 has 1200 open (West account)"}], audience).run(question, lead)
+
+        llm = FakeLLM([{"type": "answer", "answer": "I can't see that invoice"}])
+        rep_agent = Agent(name="t", reasoner=Reasoner(llm), tools=invoice_tools(), memory=memory, memory_audience=audience)
+        rep_agent.run(question, rep)
+        self.assertEqual(ctx_of(llm)["long_term_memory"], [])
+
+        llm2 = FakeLLM([{"type": "answer", "answer": "same as before"}])
+        Agent(name="t", reasoner=Reasoner(llm2), tools=invoice_tools(), memory=memory, memory_audience=audience).run(question, other_rep)
+        recalled = ctx_of(llm2)["long_term_memory"]
+        self.assertEqual(len(recalled), 1)
+        self.assertIn("I can't see that invoice", recalled[0])
+        self.assertNotIn("1200", json.dumps(recalled))
+
+    def test_items_without_an_audience_are_not_recalled_once_audiences_are_on(self):
+        from agentcore import MemoryItem, SQLiteMemory
+        memory = SQLiteMemory()
+        memory.remember(MemoryItem("Q: open amount on invoice INV-3?\nA: 1200 open"))
+        llm = FakeLLM([{"type": "answer", "answer": "ok"}])
+        Agent(name="t", reasoner=Reasoner(llm), tools=invoice_tools(), memory=memory,
+              memory_audience=lambda p: p.id).run("open amount on invoice INV-3?", FIN)
+        self.assertEqual(ctx_of(llm)["long_term_memory"], [])
+
+    def test_a_crowd_of_other_audiences_does_not_hide_the_callers_own_memory(self):
+        from agentcore import MemoryItem, SQLiteMemory
+        memory = SQLiteMemory()
+        for i in range(60):
+            memory.remember(MemoryItem("Q: open amount on invoice INV-3?\nA: other", meta={"audience": f"x{i}"}))
+        memory.remember(MemoryItem("Q: open amount on invoice INV-3?\nA: mine", meta={"audience": FIN.id}))
+        llm = FakeLLM([{"type": "answer", "answer": "ok"}])
+        Agent(name="t", reasoner=Reasoner(llm), tools=invoice_tools(), memory=memory,
+              memory_audience=lambda p: p.id).run("open amount on invoice INV-3?", FIN)
+        self.assertEqual(ctx_of(llm)["long_term_memory"], ["Q: open amount on invoice INV-3?\nA: mine"])
+
+    def test_without_an_audience_function_memory_is_shared_as_before(self):
+        from agentcore import SQLiteMemory
+        memory = SQLiteMemory()
+        self.agent(memory, [{"type": "answer", "answer": "INV-3 has 1200 open"}]).run("open amount on invoice INV-3?", FIN)
+        llm = FakeLLM([{"type": "answer", "answer": "ok"}])
+        Agent(name="t", reasoner=Reasoner(llm), tools=invoice_tools(), memory=memory).run("open amount on invoice INV-3?", FIN)
+        self.assertEqual(len(ctx_of(llm)["long_term_memory"]), 1)
 
 
 if __name__ == "__main__":

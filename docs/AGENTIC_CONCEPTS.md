@@ -20,7 +20,7 @@ Projects: **01** Enterprise MCP Tool Gateway + Customer Service Copilot · **02*
 
 ## Concept details by project
 ### Memory & State
-- **01**: Long-term: answered questions, account aliases (pgvector). State: the current case and its open orders, refreshed every iteration.
+- **01**: Long-term: answered questions, account aliases (pgvector), recalled only for callers with the same scopes and regions as the one who asked. State: the current case and its open orders, refreshed every iteration.
 - **02**: Memory: partner order history and resolved exceptions. State: live ATP and the order's current status each iteration.
 - **03**: Showcase of State: the live shipment snapshot is re-read every iteration, so the agent sees its own reroute take effect. Memory: carrier/lane performance and past claims.
 - **04**: Memory: vendor and customer patterns. State: period status (no proposals into a closed period) and live queue totals.

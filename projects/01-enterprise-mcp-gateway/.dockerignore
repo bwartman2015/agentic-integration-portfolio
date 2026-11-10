@@ -7,5 +7,6 @@
 !mock_apis/ridgeline_mock_apis/
 !mock_apis/tests/
 !mock_systems/
+!policy/
 **/__pycache__
 **/*.pyc
