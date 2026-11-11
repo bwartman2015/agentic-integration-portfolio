@@ -11,8 +11,12 @@ from agentcore import LongTermMemory, MemoryItem, SQLiteMemory
 
 
 class PgVectorMemory:
-    """TODO(memory milestone): Postgres + pgvector implementation of LongTermMemory
-    (embeddings from a local Ollama embedding model; cosine top-k; filter by kind)."""
+    """TODO(Milestone 6): Postgres + pgvector implementation of LongTermMemory (embeddings from a local
+    Ollama embedding model; cosine top-k; filter by kind and memory audience in the SQL).
+    Connection: DATABASE_URL, the same database as the gateway's audit log: the local Postgres by
+    default, Neon (or any hosted Postgres, sslmode=require) when DATABASE_URL is set. Its tables go in a
+    separate `memory` schema and need the pgvector extension (`CREATE EXTENSION vector`, available on
+    Neon; the local container moves to a pgvector image)."""
 
     def __init__(self, dsn: str):
         self.dsn = dsn
@@ -25,5 +29,7 @@ class PgVectorMemory:
 
 
 def get_memory() -> LongTermMemory:
+    # Until PgVectorMemory exists (Milestone 6) only an explicit MEMORY_DSN selects it; Milestone 6
+    # switches this to DATABASE_URL so memory and audit share one database.
     dsn = os.environ.get("MEMORY_DSN")
     return PgVectorMemory(dsn) if dsn else SQLiteMemory(os.environ.get("MEMORY_SQLITE", "memory.db"))

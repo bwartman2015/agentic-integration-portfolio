@@ -92,6 +92,14 @@ class AgentLoopTests(unittest.TestCase):
         self.assertNotIn("jo@example.com", out.answer)
         self.assertIn("[EMAIL REDACTED]", out.answer)
 
+    def test_mask_covers_house_phone_formats_and_leaves_other_numbers(self):
+        g = Guardrails()
+        for phone in ("555-0142", "555-555-0142", "555.555.0142", "(555) 555-0142", "+1 555 555 0142"):
+            self.assertEqual(g.mask(f"call {phone} today"), "call [PHONE REDACTED] today", phone)
+        for text in ("PRO 123.4567", "weight 120 1500", "1Z 999 1234", "SO-104233", "INV-90412",
+                     "2026-11-05", "5550142", "ACCT-1002", "$8,370.00"):
+            self.assertEqual(g.mask(text), text)
+
     def test_mask_keeps_sentence_punctuation(self):
         self.assertEqual(Guardrails().mask("Write to jo@example.com."), "Write to [EMAIL REDACTED].")
 

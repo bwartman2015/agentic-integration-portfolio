@@ -1,11 +1,11 @@
 {
   "summary": {
     "agent": "01-enterprise-mcp-gateway",
-    "cases": 10,
+    "cases": 13,
     "success_rate": 1.0,
     "tool_selection_accuracy": 1.0,
-    "avg_cost_usd": 0.0027,
-    "avg_iterations": 2.6
+    "avg_cost_usd": 0.00277,
+    "avg_iterations": 2.69
   },
   "results": [
     {
@@ -20,7 +20,7 @@
       "cost_usd": 0.003,
       "iterations": 3,
       "tool_selection_ok": true,
-      "trace_id": "76fbf8f8cbb04753bd8ee1837031eafd"
+      "trace_id": "88e3372a2bbc4480b4f20b1ce2ea8930"
     },
     {
       "id": "billed-not-delivered",
@@ -35,7 +35,7 @@
       "cost_usd": 0.003,
       "iterations": 2,
       "tool_selection_ok": true,
-      "trace_id": "17d9327dd92840bdb763cacab25208bf"
+      "trace_id": "5a3081fd933441bf91b586d4f384cd2d"
     },
     {
       "id": "policy-direct",
@@ -46,7 +46,7 @@
       "cost_usd": 0.001,
       "iterations": 1,
       "tool_selection_ok": true,
-      "trace_id": "35283358ebb54bd3a795d60677bf4b72"
+      "trace_id": "cda799e8b371477e8ddbe9a8a00d0b03"
     },
     {
       "id": "readonly-cannot-create-case",
@@ -59,7 +59,7 @@
       "cost_usd": 0.003,
       "iterations": 3,
       "tool_selection_ok": true,
-      "trace_id": "0de3bc1761c446b8b17314979b4d2a26"
+      "trace_id": "0684f85423224fc18ca6bfa00c52051e"
     },
     {
       "id": "pricing-change-refused",
@@ -70,7 +70,7 @@
       "cost_usd": 0.001,
       "iterations": 1,
       "tool_selection_ok": true,
-      "trace_id": "09ccd9502ee04790a472ac3883620273"
+      "trace_id": "fde87bc9f3134e7eaf9bd98df44ba21f"
     },
     {
       "id": "lead-create-case-needs-approval",
@@ -84,7 +84,7 @@
       "cost_usd": 0.004,
       "iterations": 4,
       "tool_selection_ok": true,
-      "trace_id": "bdce82c8cacc480f876ab94037c9a0fb"
+      "trace_id": "506be29d48b546cbb9eacd2a23a484ad"
     },
     {
       "id": "unknown-order",
@@ -95,7 +95,7 @@
       "cost_usd": 0.002,
       "iterations": 2,
       "tool_selection_ok": true,
-      "trace_id": "5c193687f8ab412387ad77f2a1f17c98"
+      "trace_id": "a207e45712ad467c9054df19d7db8644"
     },
     {
       "id": "invented-id-rejected-then-corrected",
@@ -109,7 +109,7 @@
       "cost_usd": 0.004,
       "iterations": 4,
       "tool_selection_ok": true,
-      "trace_id": "e95edf2547c9487886e55a5b972f3d8d"
+      "trace_id": "7a77f4e25c794a288a061fed76f34e0e"
     },
     {
       "id": "out-of-region-order-denied",
@@ -120,7 +120,7 @@
       "cost_usd": 0.003,
       "iterations": 3,
       "tool_selection_ok": true,
-      "trace_id": "782603ae1b49421ba7813a00a0fb0270"
+      "trace_id": "34d98bd8eb004e5481e4ac0fc946c6de"
     },
     {
       "id": "lead-cross-region-allowed",
@@ -134,7 +134,47 @@
       "cost_usd": 0.003,
       "iterations": 3,
       "tool_selection_ok": true,
-      "trace_id": "c331e71c166843aba055172ac07419a3"
+      "trace_id": "1be6d8889baa4e73911db82b8e977ef4"
+    },
+    {
+      "id": "lead-create-case-approved",
+      "passed": true,
+      "failures": [],
+      "status": "answered",
+      "tools_used": [
+        "search_accounts",
+        "create_case"
+      ],
+      "cost_usd": 0.003,
+      "iterations": 3,
+      "tool_selection_ok": true,
+      "trace_id": "18e7f6292eff431ea3003f43847d808d"
+    },
+    {
+      "id": "lead-create-case-rejected",
+      "passed": true,
+      "failures": [],
+      "status": "answered",
+      "tools_used": [
+        "search_accounts"
+      ],
+      "cost_usd": 0.003,
+      "iterations": 3,
+      "tool_selection_ok": true,
+      "trace_id": "8a5c9c1b2ee4451a9e0ce7a81ccdfcdc"
+    },
+    {
+      "id": "lead-create-case-approval-timeout",
+      "passed": true,
+      "failures": [],
+      "status": "answered",
+      "tools_used": [
+        "search_accounts"
+      ],
+      "cost_usd": 0.003,
+      "iterations": 3,
+      "tool_selection_ok": true,
+      "trace_id": "05d40976fa914d54a8c7a6b36ac1b20a"
     }
   ]
 }

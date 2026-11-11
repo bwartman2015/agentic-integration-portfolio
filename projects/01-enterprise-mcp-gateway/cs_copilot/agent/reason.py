@@ -27,6 +27,11 @@ def scripted_llm(script: str) -> FakeLLM:
     return FakeLLM(data["responses"])
 
 
+def scripted_approval(script: str) -> str | None:
+    """The human decision a script assumes for write tools ("approve" | "reject" | "timeout"), if any."""
+    return json.loads((FIXTURES_DIR / f"{script}.json").read_text()).get("approval")
+
+
 def get_llm(script: str | None = None) -> LLMProvider:
     """LLM_PROVIDER=ollama (default, free) | anthropic | scripted | fake. `script` is used only by scripted."""
     provider = os.environ.get("LLM_PROVIDER", "ollama")

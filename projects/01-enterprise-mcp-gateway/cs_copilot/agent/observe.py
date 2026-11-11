@@ -6,6 +6,8 @@ import os
 
 from agentcore import JSONLSink, Span, Tracer
 
+from .guardrails import mask_pii
+
 
 class OTelSink:
     """TODO(observability milestone): export each Span as an OpenTelemetry span (OTLP)."""
@@ -20,7 +22,8 @@ class LangfuseSink:
 
 
 def get_tracer() -> Tracer:
-    sinks = [JSONLSink(os.environ.get("TRACE_FILE", "traces.jsonl"))]
+    # Traces are masked at rest: the same PII mask as answers (Milestone 5).
+    sinks = [JSONLSink(os.environ.get("TRACE_FILE", "traces.jsonl"), redact=mask_pii)]
     if os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT"):
         sinks.append(OTelSink())
     if os.environ.get("LANGFUSE_HOST"):

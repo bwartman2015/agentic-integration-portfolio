@@ -7,6 +7,8 @@
 FROM openpolicyagent/opa:1.22.2-static@sha256:f4e9be2903cd1377619366957446525fd8235a37dae4aae833224f0f6b017094 AS opa
 
 FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS base
+# Lets `make up` / `make gateway-test` delete this project's superseded builds (dangling images).
+LABEL org.ridgeline.project="ridgeline-portfolio"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -21,6 +23,8 @@ COPY gateway/requirements.lock gateway/requirements.lock
 RUN pip install --require-hashes --only-binary=:all: -r gateway/requirements.lock
 
 COPY gateway/ridgeline_gateway gateway/ridgeline_gateway
+# The one list of reason codes and scope names, shared with OPA and the copilot (policy.load_policy_data).
+COPY policy/data.json policy/data.json
 # Seeded synthetic mock systems (the ERP behind get_sales_order until the Milestone 2 connectors).
 COPY mock_systems mock_systems
 

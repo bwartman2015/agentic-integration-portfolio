@@ -4,7 +4,7 @@ import pathlib
 
 from agentcore import Agent, Checkpointer, LLMProvider, Principal, SkillLibrary
 
-from .guardrails import get_guardrails
+from .guardrails import get_guardrails, mask_pii
 from .knowledge import get_retriever, known_citations
 from .memory import get_memory
 from .observe import get_tracer
@@ -21,7 +21,8 @@ SKILLS_DIR = pathlib.Path(__file__).resolve().parents[2] / "skills"
 def _common(name: str, llm: LLMProvider) -> dict:
     return dict(reasoner=get_reasoner(name, llm), memory=get_memory(), planner=get_planner(name, llm),
                 state=get_state(), retriever=get_retriever(), skills=SkillLibrary.from_dir(SKILLS_DIR),
-                checkpointer=Checkpointer(os.environ.get("PROGRESS_DIR", "progress")), tracer=get_tracer())
+                checkpointer=Checkpointer(os.environ.get("PROGRESS_DIR", "progress"), redact=mask_pii),
+                tracer=get_tracer())
 
 
 def memory_audience(principal: Principal) -> str:

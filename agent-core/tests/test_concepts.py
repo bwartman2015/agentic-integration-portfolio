@@ -8,7 +8,7 @@ import tempfile
 import unittest
 
 from agentcore import (A2AClient, Agent, AgentCard, AgentSkill, Checkpointer, EvalCase, FakeLLM,
-                       InMemorySink, KeywordRetriever, Principal, Reasoner, ShortTermMemory, SkillLibrary,
+                       InMemorySink, JSONLSink, KeywordRetriever, Principal, Reasoner, ShortTermMemory, SkillLibrary,
                        StaticState, Tool, ToolRegistry, Tracer, TruncatingCompactor, agent_as_tool,
                        compare_to_baseline, parse_skill, register_tool_source, remote_agent_tool, run_evals,
                        serve_agent)
@@ -112,6 +112,30 @@ class HarnessTests(unittest.TestCase):
             saved = Checkpointer(d).load(out.trace_id)
             self.assertEqual(saved["status"], "answered")
             self.assertEqual(saved["tool_results"][0]["tool"], "get_invoice")
+
+    def test_progress_file_and_trace_are_redacted_at_rest_when_a_redactor_is_set(self):
+        mask = lambda text: text.replace("jo@example.com", "[EMAIL REDACTED]")
+        tools = ToolRegistry()
+        tools.register(Tool("get_contact", "Contact for an account", handler=lambda account: {"email": "jo@example.com", "n": 3},
+                            params={"account": "string"}, required=["account"], scope="ar.read"))
+        script = [{"type": "tool", "tool": "get_contact", "args": {"account": "A1"}, "reasoning": "ask jo@example.com"},
+                  {"type": "answer", "answer": "done"}]
+        with tempfile.TemporaryDirectory() as d:
+            trace = pathlib.Path(d) / "traces.jsonl"
+            agent = Agent(name="t", reasoner=Reasoner(FakeLLM(copy.deepcopy(script))), tools=tools,
+                          checkpointer=Checkpointer(d, redact=mask), tracer=Tracer(JSONLSink(str(trace), redact=mask)))
+            out = agent.run("who is the contact jo@example.com?", FIN)
+            progress = (pathlib.Path(d) / f"{out.trace_id}.json").read_text()
+            for text in (progress, trace.read_text()):
+                self.assertNotIn("jo@example.com", text)
+                self.assertIn("[EMAIL REDACTED]", text)
+            saved = Checkpointer(d).load(out.trace_id)                 # still valid JSON, structure intact
+            self.assertEqual((saved["status"], saved["tool_results"][0]["tool"]), ("answered", "get_contact"))
+            self.assertTrue(all(json.loads(line)["trace_id"] == out.trace_id for line in trace.read_text().splitlines()))
+            # Without a redactor nothing changes (other projects keep their behaviour).
+            plain = Agent(name="t", reasoner=Reasoner(FakeLLM(copy.deepcopy(script))), tools=tools,
+                          checkpointer=Checkpointer(d)).run("who is the contact jo@example.com?", FIN)
+            self.assertIn("jo@example.com", (pathlib.Path(d) / f"{plain.trace_id}.json").read_text())
 
 
 class EvalsTests(unittest.TestCase):

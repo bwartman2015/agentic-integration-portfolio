@@ -45,6 +45,16 @@ class DecisionTableParityTests(unittest.TestCase):
             with self.subTest(case=case["name"]):
                 self.assertEqual(G.local_decision(case["input"]), case["expect"])
 
+    def test_reason_codes_come_from_the_one_shared_list(self):
+        policy = json.loads((ROOT / "policy" / "data.json").read_text())["gateway_policy"]
+        self.assertEqual(G.REASONS, frozenset(policy["reasons"]))
+        self.assertFalse(set(policy["reasons"]) & set(policy["gateway_reasons"]))
+        generic = G._explain({"reason": "no_such_reason"}, LEAD, "create_case")
+        for reason in set(policy["reasons"]) - {"allowed", "invalid_request"}:
+            with self.subTest(reason=reason):       # every denial the policy can return has its own text
+                self.assertNotEqual(G._explain({"reason": reason, "required_scope": "crm.write"}, LEAD, "create_case"),
+                                    generic.replace("no_such_reason", reason))
+
     def test_policy_data_matches_the_copilot_tools(self):
         self.assertEqual({t.name: t.scope for t in TOOLS}, G.TOOL_SCOPES)
         self.assertEqual({t.name for t in TOOLS if t.side_effect == "write"}, set(G.WRITE_TOOLS))

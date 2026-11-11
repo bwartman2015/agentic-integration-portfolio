@@ -18,7 +18,8 @@ os.environ.setdefault("TRACE_FILE", str(HERE / "results" / "traces.jsonl"))
 
 from agentcore import compare_to_baseline, load_cases, run_evals  # noqa: E402
 from cs_copilot.agent.build import BUILDERS  # noqa: E402
-from cs_copilot.agent.reason import get_llm  # noqa: E402
+from cs_copilot.agent.guardrails import scripted_approver, set_approver  # noqa: E402
+from cs_copilot.agent.reason import get_llm, scripted_approval  # noqa: E402
 from mock_systems import reset_systems  # noqa: E402
 
 DEFAULT_AGENT = 'cs-copilot'
@@ -31,6 +32,7 @@ def baseline_path() -> pathlib.Path:
 
 def agent_for(case):
     reset_systems()                                             # every case starts from the seeded data
+    set_approver(scripted_approver(scripted_approval(case.id) if os.environ["LLM_PROVIDER"] == "scripted" else None))
     return BUILDERS[(case.tags or [DEFAULT_AGENT])[0]](get_llm(script=case.id))
 
 

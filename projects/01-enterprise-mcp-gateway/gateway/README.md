@@ -2,19 +2,19 @@
 
 The Ridgeline enterprise MCP gateway is the one controlled **environment** that every agent in the portfolio acts through. It is built on the official MCP Python SDK (`mcp==2.3.0`, `MCPServer`, which was called FastMCP before SDK 2.x) and serves **streamable HTTP** at `/mcp`. All data is synthetic (fictional Ridgeline Supply Co.).
 
-## Status: Milestone 4 (authorization). Every call needs a Keycloak token and an allow from OPA; connectors (M2) live
+## Status: Milestone 5 (guardrails, audit, approvals). Every call needs a Keycloak token and an allow from OPA, is rate limited and audited; the one write tool runs only after a human approves it
 | | Now | Arrives in |
 |---|---|---|
-| Tools | Four read-only tools: `search_accounts`, `get_sales_order`, `track_shipment`, `get_open_invoices`. They keep the copilot's names, arguments and output shapes. | M5: `create_case` (write) behind the n8n approval |
+| Tools | Four read-only tools: `search_accounts`, `get_sales_order`, `track_shipment`, `get_open_invoices`, and one write, `create_case`, which runs only after a human approves it. They keep the copilot's names, arguments and output shapes. | |
 | Connectors | One per system, each with a `seed` backend (offline synthetic data) and a live backend, chosen in `.env`. The table below lists them. | |
-| Choke point | Every `tools/call` goes through `GatewayServer.call_tool`. It rejects unknown tools, asks OPA (scope check, then data check), rejects unexpected arguments and logs every outcome. | M5 audit plugs in here |
+| Choke point | Every `tools/call` goes through `GatewayServer.call_tool`. In order: rate limit, unknown tools rejected, OPA (scope check, then data check), unexpected arguments rejected, the tool (a write asks a human), PII masking, then one audit row and one log line for every outcome. | |
 | Input validation | Closed JSON Schemas (`additionalProperties: false`):<br>• `sales_order` must match `^SO-[0-9]{6}$`<br>• `account_id` must match `^ACCT-[0-9]{4}$`<br>• `query` must match `^[A-Za-z0-9][A-Za-z0-9 &.,'-]{1,79}$`<br>The gateway accepts only canonical IDs; clients normalise case and whitespace. | |
 | Secrets | Read only from the environment and masked in every repr. Each container gets only its own variables. A half-configured live backend stops startup (fail closed). | |
-| Writes | None from the gateway. Its connectors may only send `GET` (plus the Salesforce token `POST`), enforced in `HttpConnector`. The operator seed tool alone builds a `POST`/`PATCH` Salesforce connector, and it never sends `DELETE` or `PUT`. | M5: `create_case` behind approval |
+| Writes | One: `create_case`, after an explicit human approval, into the seeded CRM. The connectors to live systems still send only `GET` (plus the Salesforce token `POST`), enforced in `HttpConnector`. The operator seed tool alone builds a `POST`/`PATCH` Salesforce connector, and it never sends `DELETE` or `PUT`. | Optional: write approved cases to the Salesforce dev org |
 | Transport security | Published on `127.0.0.1` only. Host and Origin allowlist (a bad Host gets 421, a bad Origin 403). The containers are non-root and read-only, with all capabilities dropped and `restart: "no"`. The mock APIs sit on an internal-only Docker network (`internal: true`: no route to the host or the internet). Images are local builds only (`pull_policy`). | |
 | Identity | **Required.** A Keycloak access token on every `/mcp` call (`auth.py`). The gateway checks:<br>• RS256 signature against Keycloak's keys<br>• exact `iss` and `aud` = `ridgeline-gateway`<br>• `typ` Bearer and an `azp` client id<br>• `exp` exactly; 5 s clock leeway on `nbf`/`iat`<br>Anything else gets 401 with a `WWW-Authenticate` challenge pointing to `/.well-known/oauth-protected-resource/mcp`. It fails closed: an unverifiable token gets 401, cached keys are dropped after Keycloak has been unreachable for 1 hour, and the gateway won't start without `OIDC_*`. | Consider `stateless_http=True` with per-request JWTs |
-| Authorization | **Required.** OPA decides every call (`policy.py`, `../policy/gateway.rego`): per-tool scopes, a region data rule, default deny, fail closed. `tools/list` shows only the tools a caller's scopes cover. The scope-less `p01-expiry-test` client is denied every tool. See [Authorization (OPA)](#authorization-opa). | M5: rate limits; `create_case` behind approval |
-| Observability | One JSON line per call: `{"event": "tool_call", "tool", "outcome", "ok", "latency_ms", "client_id", "scopes", "regions", "policy_ms", "policy_reason"?, "hidden_out_of_region"?, "backend", "upstream_status"?, "upstream_ms"?, "upstream_calls"?, "request_id", "traceparent"?, "x_request_id"?, "error_type"?}`.<br>• Outcomes: `ok`, `denied`, `not_found`, `invalid_arguments`, `unknown_tool`, `upstream_error`, `error`.<br>• A denial carries the policy's reason code in `policy_reason`. `backend` and the `upstream_*` fields describe the tool's own system; policy queries and region lookups are not counted there.<br>• Not logged: argument values, unknown tool names, malformed trace headers. SDK and HTTP-client INFO logs are silenced.<br>• Clients see only `Error executing tool <name>` for crashes and a sanitized message for upstream failures. | M5: audit table, rate limits, PII masking, approvals |
+| Authorization | **Required.** OPA decides every call (`policy.py`, `../policy/gateway.rego`): per-tool scopes, a region data rule, default deny, fail closed. `tools/list` shows only the tools a caller's scopes cover. The scope-less `p01-expiry-test` client is denied every tool. See [Authorization (OPA)](#authorization-opa). | |
+| Observability | One audit row and one JSON line per call: `{"event": "tool_call", "tool", "outcome", "ok", "latency_ms", "client_id", "scopes", "regions", "policy_ms", "policy_reason"?, "hidden_out_of_region"?, "pii_masked"?, "approval_id"?, "audited"?, "backend", "upstream_status"?, "upstream_ms"?, "upstream_calls"?, "request_id", "traceparent"?, "x_request_id"?, "error_type"?}`.<br>• Outcomes: `ok`, `denied`, `not_found`, `invalid_arguments`, `unknown_tool`, `upstream_error`, `error`.<br>• A denial carries the policy's reason code in `policy_reason`. `backend` and the `upstream_*` fields describe the tool's own system; policy queries and region lookups are not counted there.<br>• Not logged: argument values (the audit row stores them masked), unknown tool names, malformed trace headers. SDK and HTTP-client INFO logs are silenced.<br>• Clients see only `Error executing tool <name>` for crashes and a sanitized message for upstream failures. | |
 
 ### Connectors
 | Tool | System | `seed` | Live backend (`.env`) | Auth | Mapping notes |
@@ -39,16 +39,23 @@ Live sandbox setup (Salesforce External Client App, SAP API key): [../docs/live-
 ## Layout
 ```
 gateway/
-  ridgeline_gateway/server.py        GatewayServer (MCPServer subclass), the four tools, /healthz, startup
+  ridgeline_gateway/server.py        GatewayServer (MCPServer subclass), the five tools, /healthz, /audit,
+                                     /approvals/callback, /approvals/pending, startup
+  ridgeline_gateway/audit.py         audit store (Postgres via asyncpg; in-memory for tests), AuditConfig, fail closed
+  ridgeline_gateway/approvals.py     human approval through n8n: request, wait, one-time callback, timeout
+  ridgeline_gateway/pii.py           masking of contact emails and phones in results and audit arguments
+  ridgeline_gateway/ratelimit.py     per-client sliding one-minute window
   ridgeline_gateway/config.py        settings from env, Secret, fail-closed validation
   ridgeline_gateway/auth.py          Keycloak JWT verifier (TokenVerifier), AuthConfig, principal (client, scopes, regions)
   ridgeline_gateway/policy.py        OPA client (fail closed), decisions, denial messages, PolicyConfig
   ridgeline_gateway/connectors/      base (HttpConnector, errors, upstream info), seed, salesforce, sap, http_mocks
   ridgeline_gateway/admin/           live_check (all tools through MCP, as cs-rep), token (make token),
-                                     seed_salesforce (synthetic accounts)
+                                     seed_salesforce (synthetic accounts), audit_report (make audit),
+                                     approvals (make approvals), request_case (make request-case)
   tests/                             config, connectors (httpx2.MockTransport), tool contracts + logging,
                                      identity, authorization against a real OPA (opa_fixture.py),
-                                     admin tools (seed_salesforce against a fake org, live_check)
+                                     admin tools (seed_salesforce against a fake org, live_check),
+                                     governance (audit, rate limits, PII, approvals against a fake n8n)
   pyproject.toml, requirements.lock  top-level pin; full hashed closure (linux amd64 + arm64)
   Dockerfile                         digest-pinned python:3.12-slim; stages base -> test -> runtime;
                                      the test stage adds the pinned OPA binary and ../policy
@@ -57,7 +64,10 @@ gateway/
 ../lock-deps.sh                      ./lock-deps.sh gateway | mock_apis
 ../docker-compose.yml                gateway on 127.0.0.1:${GATEWAY_PORT:-8765}; keycloak on 127.0.0.1:${KEYCLOAK_PORT:-8080};
                                      carrier-api, ar-api internal only; opa on its own internal network;
-                                     ops (profile) for live-check/token
+                                     audit-db (Postgres) on its own internal network; n8n on 127.0.0.1:${N8N_PORT:-5678};
+                                     ops (profile) for live-check/token/audit/approvals
+../audit/schema.sql, init.sh        audit schema (idempotent, append-only triggers); local role setup
+../n8n/ridgeline-approval.json       the approval workflow, imported and published at every n8n start
 ../keycloak/ridgeline-realm.json     realm, client scopes, clients with a regions claim (secrets are ${ENV} placeholders)
 ../tests/test_gateway_http.py        stdlib wire-level MCP tests against the running stack
 ```
@@ -71,7 +81,10 @@ make gateway-test P=01   # builds each image's `test` stage and runs it (no netw
 make test P=01           # includes the raw JSON-RPC-over-HTTP contract tests while the stack is up
 REQUIRE_GATEWAY=1 make test P=01   # CI: fail instead of skipping when the gateway is down
 make live-check P=01     # every tool through MCP; result per tool with its client and configured backend
-make down P=01
+make audit P=01          # audit report (as p01-auditor, the only identity with audit.read)
+make approvals P=01      # pending write requests and their approval links (operator token)
+make request-case P=01   # as cs-lead, request a case and wait for the human decision
+make down P=01           # the audit log and n8n's database stay in Docker volumes
 ```
 If you change `GATEWAY_PORT` in `.env`, export it too: Compose reads `.env`, but `make test` does not. With live CRM/ERP backends the wire tests detect it (the seeded order SO-104233 is not in the SAP sandbox) and skip the seed-data comparisons: SAP sandbox orders have no Ridgeline account, so the rep is denied them. `GATEWAY_LIVE_BACKENDS=1` or `=0` overrides the detection.
 
@@ -160,7 +173,7 @@ What a denied caller sees is a normal MCP tool error (`isError: true`), with tex
 OPA itself:
 - It sits on its own internal Docker network that only the gateway joins. It is not published to the host.
 - `--authorization=basic` with [`../policy/system_authz.rego`](../policy/system_authz.rego): its API answers only the two decision queries and `/health`. Policies and data cannot be read or replaced over the network; they change by editing `../policy/` and restarting.
-- Decision logging is off (inputs hold tool arguments). The gateway's call log is the record; the audit table arrives in M5.
+- Decision logging is off (inputs hold tool arguments). The gateway's audit table and call log are the record.
 - The container is read-only with all capabilities dropped. Its healthcheck evaluates the mounted policy, so a policy that does not compile keeps the gateway from starting.
 
 Changing the policy:
@@ -168,6 +181,47 @@ Changing the policy:
 2. `make opa-test P=01` runs the Rego unit tests and `opa fmt` in the pinned image.
 3. `make test P=01` runs the same decision table against the copilot's offline copy of the rules (`cs_copilot/agent/guardrails.py`), so the two cannot drift.
 4. `make gateway-test P=01` runs the gateway against a real OPA with the edited policy; `make up P=01` restarts the stack with it.
+
+## Guardrails, audit and approvals
+Milestone 5. Agents propose; a human approves.
+
+**Approvals.** `create_case` is the gateway's only write. After the rate limit, scope, restricted-change and region checks pass:
+1. The gateway records the request in the `approvals` table. If that fails, the write is refused (`audit_unavailable`).
+2. It posts the request to the n8n workflow (`../n8n/ridgeline-approval.json`) with the shared secret `X-Ridgeline-Approval` (`APPROVAL_WEBHOOK_SECRET`; n8n refuses requests without it): request id, a one-time callback token, the client, the tool, the account, the case text and how long it will wait. Subject and summary allow only plain text, so they cannot carry markup into the form.
+3. The workflow answers with a signed link to an approval form and waits, at most as long as the gateway does. The gateway accepts the link only if it is on `N8N_FORM_BASE_URL` and carries n8n's signature.
+4. A person opens the link (`make approvals P=01`), chooses Approve or Reject and gives their name.
+5. The workflow posts `{request_id, token, decision, approver}` to `/approvals/callback` at the gateway's fixed internal address. A request id is resolved once, and only with its own token.
+6. Only `Approve` from a named person writes the case. The result names the approval and the approver.
+
+| What happens | Reason code | Written |
+|---|---|---|
+| Approved | (outcome `ok`) | yes |
+| Rejected, or anything but an explicit named Approve | `approval_denied` | no |
+| No decision within `APPROVAL_TIMEOUT_S` (default 120 s) | `approval_timeout` | no |
+| n8n unreachable, an HTTP error, a wrong request id, a form link on another host | `approval_unavailable` | no |
+| The request or the approval cannot be recorded (incl. a request another process already closed) | `audit_unavailable` | no |
+| The caller cancels or disconnects while waiting | outcome `cancelled`; the approval is closed as `timed_out` | no |
+
+The approval link is the approver's credential: no tool returns it, it is not logged, and it is not stored. `GET /approvals/pending` lists it, and needs `APPROVAL_OPERATOR_TOKEN`, which no agent client holds, so an agent cannot approve its own request.
+
+How n8n is protected:
+- **Network.** n8n sits on the internal `approvals` network, which only the gateway shares, plus a network that only publishes the form on `127.0.0.1`. An agent container cannot resolve or reach it.
+- **Editor and data.** The editor needs the owner account (create it on first start: [setup guide, section 5b](../docs/live-sandbox-setup.md#5b-approvals-create-the-n8n-owner-account-milestone-5-once)), its public API is off (`N8N_PUBLIC_API_DISABLED`), and finished executions, which hold case text, are pruned after 7 days.
+- **What the form proves.** The form has no login of its own: whoever holds the signed link can decide, and the approver name is what they type. It expires when the gateway stops waiting. Its completion page says the decision was *sent*; the requester's terminal and `make audit` show whether it was applied.
+
+**Audit.** One row per authenticated tool call in Postgres (`audit_log`), whatever the outcome, cancelled calls included (a request without a valid token never becomes a tool call; it gets 401 and an `auth_rejected` log line): client, scopes, regions, tool, outcome, reason code, argument values with PII masked and long text cut, latency, backend, upstream status, JSON-RPC request id, trace id, approval id, how many values were masked in the result. Approvals have their own table with status, approver and timestamps.
+- The gateway's database role (`gateway_audit`, locally and in Neon) can insert and read audit rows but not update or delete them. It may set only the decision columns of an approval.
+- At startup the gateway closes any approval request a previous process left `pending` (it stopped while a human was deciding) as `unavailable`. Nothing was written for it. A late form submission reaches no waiting request (the gateway answers n8n with 404) and changes nothing.
+- A read that cannot be audited is not returned (`audit_unavailable`). An approved write is already recorded in `approvals`, so it is reported, and the log line says `"audited": false`.
+- `GET /audit?limit=N` needs a valid token with `audit.read`, held only by the operator identity `p01-auditor` (no agent): totals by outcome and by reason, recent calls, recent approvals. `make audit P=01` prints it.
+- Postgres runs on its own internal network, which only the gateway joins. Its data survives `make down`; `docker volume rm ridgeline-p01_audit-data` resets it.
+- Or keep the audit log in a hosted Postgres such as Neon: set `DATABASE_URL` in `.env` (TLS required for any remote host), run `make audit-init P=01` once and `make audit-role P=01` (a least-privilege `gateway_audit` role, written into `.env`), then `make up`. The schema (`../audit/schema.sql`) is the same file the local container runs; its triggers keep the log append-only even for the table owner. Setup: [Neon](../docs/live-sandbox-setup.md#6-optional-keep-the-audit-log-in-neon-milestone-5).
+
+**PII masking.** Contact emails, phone numbers and SSNs in results are replaced with `[EMAIL REDACTED]` / `[PHONE REDACTED]` / `[SSN REDACTED]` unless the token holds `crm.pii` (cs-lead only). Only string values change, so JSON numbers and record IDs are untouched; a bare 7-digit number is masked only in the `555-0142` form, so `PRO 123.4567` stays. Audit rows store arguments masked for every caller, and the stored approval subject is masked too. The copilot (agent-core) uses the same patterns; `tests/test_milestone0.py` fails if they drift.
+
+**Rate limits.** A sliding one-minute window per verified `client_id`, checked before policy or any backend: `RATE_LIMIT_PER_MINUTE` (default 120), with per-client overrides in `RATE_LIMIT_OVERRIDES`. The test-only `p01-rate-test` client gets 5. Over the limit the caller gets `Access denied: <client> is over its call rate limit`, audited as `rate_limited`. The counters live in the gateway process; several replicas would need a shared store.
+
+**Reason codes.** `../policy/data.json` holds the one list: `reasons` (what OPA may return) and `gateway_reasons` (the gateway's own fail-closed codes). OPA, the gateway and the copilot all read it, and each side has a test that fails if a code is missing or has no explanation for the caller.
 
 ## Updating dependencies
 1. Edit the top-level pins in `gateway/pyproject.toml` or `mock_apis/pyproject.toml`.
@@ -177,8 +231,9 @@ Changing the policy:
 To move the base image, update the digest in both Dockerfiles (`docker pull python:3.12-slim`, then `docker image inspect --format '{{index .RepoDigests 0}}' python:3.12-slim`). To move OPA, update the image and digest in `../docker-compose.yml` and `gateway/Dockerfile` together (`make opa-test` reads the Compose pin).
 
 ## Notes for later milestones
-- `gateway:*` is in `GATEWAY_ALLOWED_HOSTS`, so containers on the project network (`ops` now; n8n and the copilot in M5-6) can call `http://gateway:8000/mcp`. They still need a token.
+- `gateway:*` is in `GATEWAY_ALLOWED_HOSTS`, so containers on the project network (`ops`, n8n, and the copilot in M6) can call the gateway. `/mcp` still needs a token; n8n uses only `/approvals/callback`.
+- Optional: write approved cases to the Salesforce dev org (`CRM_BACKEND=salesforce`). That needs Case create permission for the connected app's Run As user and a write-capable connector for that one endpoint.
 - The Salesforce Run As user is the identity behind every CRM call. The setup guide recommends a dedicated minimum-access integration user now. The gateway's connector is GET-only either way.
 
 ## Why the copilot doesn't use it yet
-The copilot (`../cs_copilot/`) still calls the in-process mocks. In Milestone 6 it switches to an MCP client (`McpToolSource` via `agentcore.register_tool_source`). From then on, the client's policy decides scopes and side effects; the server's own tool descriptions are never trusted for that. Since Milestone 4 the copilot's guardrails already apply the gateway's policy: the same Rego through OPA when `OPA_URL` is set, and a tested offline copy of the rules otherwise.
+The copilot (`../cs_copilot/`) still calls the in-process mocks. In Milestone 6 it switches to an MCP client (`McpToolSource` via `agentcore.register_tool_source`). From then on, the client's policy decides scopes and side effects; the server's own tool descriptions are never trusted for that. Since Milestone 4 the copilot's guardrails already apply the gateway's policy: the same Rego through OPA when `OPA_URL` is set, and a tested offline copy of the rules otherwise. Its own approval hook refuses every write until then.

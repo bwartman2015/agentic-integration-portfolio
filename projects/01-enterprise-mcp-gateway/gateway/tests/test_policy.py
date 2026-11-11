@@ -19,6 +19,7 @@ from mock_systems import get_systems, reset_systems
 from opa_fixture import CRM_ONLY, LEAD, NO_SCOPES, REP, act_as, real_policy, start_opa, use_policy
 from ridgeline_gateway import server
 from ridgeline_gateway.config import load_settings
+from ridgeline_gateway.pii import mask_value
 from ridgeline_gateway.connectors import build_connectors
 from ridgeline_gateway.policy import (POLICY_ERROR, POLICY_UNAVAILABLE, Decision, DenyAllPolicy, PolicyConfig,
                                       PolicyConfigError, build_policy, denial_message)
@@ -253,7 +254,8 @@ class RegionRuleTests(_Gateway):
         everything = get_systems().crm.find_accounts("ACCT-10")
         self.assertGreater(len({a["region"] for a in everything}), 1)
         mine = (await self.call("search_accounts", {"query": "ACCT-10"})).structured_content
-        self.assertEqual(mine["matches"], [a for a in everything if a["region"] == "Central"])
+        # A rep's token has no PII scope, so contact details come back masked (Milestone 5).
+        self.assertEqual(mine["matches"], mask_value([a for a in everything if a["region"] == "Central"])[0])
         self.assertEqual(mine["hidden_out_of_region"], len(everything) - len(mine["matches"]))
         act_as(self, LEAD)
         full = (await self.call("search_accounts", {"query": "ACCT-10"})).structured_content

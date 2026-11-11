@@ -47,7 +47,7 @@ Projects: **01** Enterprise MCP Tool Gateway + Customer Service Copilot · **02*
 - **07**: SAP status glossary retrieved so codes become plain English.
 - **08**: Dispute playbook retrieved and cited.
 ### Harness
-- **01**: agent-core loop: context injection (policy, skills, memory), compaction for long chats, progress files per conversation.
+- **01**: agent-core loop: context injection (policy, skills, memory), compaction for long chats, progress files per conversation, masked at rest.
 - **02**: agent-core loop with progress files per order, so an aged exception shows exactly where triage stopped.
 - **03**: Progress files per shipment; compaction for long multi-day exceptions.
 - **04**: Deterministic matching engines are tools (action); agents add judgment and explanation; progress files make every proposal auditable.
@@ -92,7 +92,7 @@ Projects: **01** Enterprise MCP Tool Gateway + Customer Service Copilot · **02*
 - **07**: Publishes an Agent Card ('order-360') used by Project 08.
 - **08**: Core of this project: discovery via Agent Cards at `/.well-known/agent-card.json`, tasks and artifacts over JSON-RPC `message/send`, bearer-token auth.
 ### Multi-Agent System
-- **01**: One gateway serves many specialist agents, each with its own identity and scopes.
+- **01**: One gateway serves many specialist agents, each with its own identity, scopes and rate limit; every call is audited per agent, and writes wait for a human approval.
 - **02**: Two specialists (triage, onboarding) with separate prompts, tools and scopes.
 - **03**: Exception and freight-audit specialists share evidence (late beyond SLA -> refund eligibility).
 - **04**: Manager + two specialists; segregation of duties enforced by separate identities.

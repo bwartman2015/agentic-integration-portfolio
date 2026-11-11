@@ -1,17 +1,17 @@
 """Connectors: one per enterprise system, each with a `seed` backend and a live backend (see config.py)."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import httpx2
 
 from ..config import Settings
-from .base import (ArConnector, AuthRejected, CarrierConnector, ConnectorError, CrmConnector, ErpConnector,
+from .base import (ArConnector, AuthRejected, CarrierConnector, CaseStore, ConnectorError, CrmConnector, ErpConnector,
                    Forbidden, HttpConnector, NotFound, begin_upstream)
 from .http_mocks import ArHttp, CarrierHttp
 from .salesforce import SalesforceAuth, SalesforceCrm
 from .sap import SapSandboxErp
-from .seed import SeedAr, SeedCarrier, SeedCrm, SeedErp
+from .seed import SeedAr, SeedCarrier, SeedCases, SeedCrm, SeedErp
 
 __all__ = ["Connectors", "build_connectors", "salesforce_connectors", "ConnectorError", "AuthRejected", "Forbidden",
            "NotFound", "begin_upstream"]
@@ -23,6 +23,7 @@ class Connectors:
     erp: ErpConnector
     carrier: CarrierConnector
     ar: ArConnector
+    cases: CaseStore = field(default_factory=SeedCases)   # the only write path; seed only for now
 
     async def aclose(self) -> None:
         """Close every HTTP connection pool (server shutdown)."""

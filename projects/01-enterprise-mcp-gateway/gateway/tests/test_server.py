@@ -48,10 +48,10 @@ class ToolContractTests(unittest.IsolatedAsyncioTestCase):
         async with Client(mcp) as client:
             return await client.call_tool(name, args)
 
-    async def test_lists_the_four_read_only_tools_with_closed_schemas(self):
+    async def test_lists_four_read_only_tools_and_one_write_tool_with_closed_schemas(self):
         async with Client(mcp) as client:
             tools = {t.name: t for t in (await client.list_tools()).tools}
-        self.assertEqual(sorted(tools), sorted(TOOLS))
+        self.assertEqual(sorted(tools), sorted(TOOLS + ["create_case"]))
         expected = {"search_accounts": ("query", None), "get_sales_order": ("sales_order", SALES_ORDER_PATTERN),
                     "track_shipment": ("sales_order", SALES_ORDER_PATTERN),
                     "get_open_invoices": ("account_id", ACCOUNT_ID_PATTERN)}
@@ -63,7 +63,11 @@ class ToolContractTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(schema["properties"][param]["pattern"], pattern, name)
             self.assertTrue(tools[name].annotations.read_only_hint, name)
             self.assertFalse(tools[name].annotations.destructive_hint, name)
-        self.assertNotIn("create_case", tools, "writes stay off the gateway until approvals (Milestone 5)")
+        write = tools["create_case"]
+        self.assertFalse(write.annotations.read_only_hint)
+        self.assertEqual(write.input_schema["required"], ["account_id", "subject", "summary"])
+        self.assertIs(write.input_schema["additionalProperties"], False)
+        self.assertIn("human approves", write.description)
 
     async def test_seed_results_match_the_copilot_shapes(self):
         systems = get_systems()

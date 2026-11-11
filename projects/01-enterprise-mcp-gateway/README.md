@@ -48,13 +48,19 @@ flowchart TB
 
 ## Run it
 ```bash
-make up P=01            # from the repo root: create/backfill .env, build + start gateway, Keycloak, OPA, mock APIs (Docker Desktop)
+make up P=01            # from the repo root: create/backfill .env, build + start gateway, Keycloak, OPA,
+                        # Postgres (audit), n8n (approvals) and the mock APIs (Docker Desktop)
 make opa-test P=01      # Rego unit tests + format check for policy/, in the pinned OPA image
 make gateway-test P=01  # gateway + mock-API tests, inside their images' test stages (real OPA binary)
 make test P=01          # includes wire-level MCP + identity tests while the stack is up (skipped otherwise);
                         # live Salesforce/SAP backends are detected and the seed-only comparisons skipped
 make live-check P=01    # call all four tools through MCP as cs-rep (real Keycloak token, real OPA decision)
 make token P=01 CLIENT=cs-rep   # print a 5-minute access token, e.g. to paste into MCP Inspector
+make audit-init P=01    # one time, only with DATABASE_URL set (Neon): create the audit tables there
+make audit-role P=01    # then: a least-privilege gateway_audit role in Neon, written into DATABASE_URL
+make audit P=01         # the audit report: every call, allowed or denied, with its reason; approvals
+make approvals P=01     # write requests waiting for a human, with their approval-form links
+make request-case P=01  # as cs-lead, request a CRM case and wait for your decision in the n8n form
 make arch-check P=01
 make demo P=01          # offline demo with a scripted LLM; prints every span by layer
 make eval P=01          # scripted evals vs evals/baseline.json
@@ -69,9 +75,55 @@ make eval P=01          # scripted evals vs evals/baseline.json
 | 2 | Connectors | Salesforce (OAuth), SAP sandbox (API key), mock carrier and mock AR APIs behind gateway tools | Done |
 | 3 | Authentication | Keycloak realm with `cs-rep` and `cs-lead` clients; the gateway validates JWTs | Done |
 | 4 | Authorization with OPA | Per-tool scope policies and a data rule (reps only see accounts in their region) | Done |
-| 5 | Guardrails, audit, approvals | Rate limits, PII masking, audit table and `/audit` report; n8n approval webhook for `create_case`, denying on timeout | Planned |
+| 5 | Guardrails, audit, approvals | Rate limits, PII masking, audit table and `/audit` report; n8n approval for `create_case`, denying on timeout | Done |
 | 6 | Copilot on the gateway, long-term memory | The copilot calls the gateway through an MCP client; RAG and skills; Postgres + pgvector memory | Planned |
 | 7 | Evals and A2A card | Real-model eval baseline (Ollama); publish the copilot's Agent Card | Planned |
+
+**Milestone 5 (guardrails, audit, approvals): done.** Agents propose; a human approves. The gateway now has its first write tool, `create_case`, and it runs only after a person approves it in an n8n workflow. Every authenticated tool call, allowed, denied or cancelled, is written to an audit table with its reason (a request without a valid token is refused before it is a tool call, and is logged). Contact details are masked for callers without the PII scope, and every client has a rate limit. Details: [gateway/README.md](gateway/README.md#guardrails-audit-and-approvals).
+
+How a lead's `create_case` runs:
+1. The usual checks first: rate limit, scope (`crm.write`), restricted changes (now checked at any depth, so `{"fields": {"credit_limit": 1}}` is refused), and the account's region.
+2. The gateway records an approval request in Postgres. No record, no request: the write is refused.
+3. It sends the request to the n8n workflow, with a shared secret n8n checks. n8n answers with a signed link to an approval form and waits, at most as long as the gateway does.
+4. A person opens the form (`make approvals P=01` lists the links), chooses Approve or Reject and gives their name.
+5. n8n reports the decision to the gateway with a one-time token that only that request's workflow run was given. Only an explicit Approve from a named person creates the case.
+
+Who approves: anyone who opens the signed link. The form itself has no login, and the approver's name is what they type, so the link is handled like a credential. n8n runs on a network only the gateway shares, its editor needs the owner account, and its public API is off.
+
+Anything else is refused and nothing is written: a rejection, no answer within `APPROVAL_TIMEOUT_S` (120 s by default), n8n unreachable or answering anything unexpected, or a decision the audit store cannot record. The approval link is the approver's credential, so it never reaches an agent: no tool returns it, it is not logged or stored, and only an operator token that no agent holds can list it.
+
+| Guardrails, audit, approvals (Milestone 5) | What works now |
+|---|---|
+| Approvals | `create_case` waits for a human decision in n8n (`n8n/ridgeline-approval.json`, imported at every start). Late, repeated or forged callbacks change nothing; the form expires when the gateway stops waiting. An approval that cannot be recorded does not count |
+| Audit | Postgres: the local container on an internal network only the gateway joins, or a hosted database such as Neon when `DATABASE_URL` is set (TLS required). One row per authenticated tool call, including cancelled ones: client, scopes, regions, tool, outcome, reason code, masked argument values, latency, backend, request and trace ids, approval id. Triggers refuse changing or deleting audit rows for every role, and the gateway's own role (`gateway_audit`, locally and in Neon) can only add and read them. At startup the gateway closes any approval a previous process left pending as `unavailable`. A read that cannot be audited is not returned. `GET /audit` (scope `audit.read`, held only by the operator identity `p01-auditor`, never by an agent) and `make audit P=01` give totals by outcome and reason, recent calls and approvals |
+| PII masking | Contact emails, phone numbers and SSNs are masked in results unless the token holds `crm.pii` (cs-lead only). JSON numbers and record IDs (`SO-`, `ACCT-`, `INV-` ...) are untouched; a 7-digit number is masked only in the `555-0142` form. Argument values are masked in the audit table for everyone, and the copilot uses the same patterns (a test checks they agree) |
+| Rate limits | A sliding one-minute window per verified client (`RATE_LIMIT_PER_MINUTE`, default 120), checked before policy or any backend. Over the limit: a clear tool error, audited as `rate_limited` |
+| One list of reason codes | `policy/data.json` holds every reason code. The Rego, the gateway and the copilot read that list, and tests on all three sides fail if a code is missing from it or has no explanation for the caller |
+| Masking at rest | The copilot's progress files and traces get the same PII mask as its answers, through an opt-in redaction hook in agent-core's checkpointer and trace sink. Record IDs stay readable |
+| Copilot | Its approval hook denies every write unless an approver is installed; none is by default. The copilot reaches the gateway's n8n approval in Milestone 6, when it calls the gateway's tools |
+
+Excerpt of `make audit P=01` after the wire tests:
+```text
+audit log: 38 call(s)
+by outcome: denied=14, invalid_arguments=1, not_found=1, ok=20, unknown_tool=2
+by reason:  approval_denied=1, missing_scope=9, out_of_region=2, rate_limited=2
+
+time (UTC)           client          tool               outcome            reason            args
+2026-11-11T14:39:35  cs-rep          get_sales_order    not_found          -                 {"sales_order": "SO-999999"}
+2026-11-11T14:39:32  cs-lead         create_case        denied             approval_denied   {"account_id": "ACCT-1002", ...}
+2026-11-11T14:39:29  p01-rate-test   search_accounts    denied             rate_limited      {"query": "Summit"}
+...
+requested (UTC)      request                client    account    status     approver
+2026-11-11T14:39:30  apr-c8768cde4ec88428   cs-lead   ACCT-1002  rejected   Dana Lead
+2026-11-11T14:39:24  apr-6d74ba2894bf5e0f   cs-lead   ACCT-1002  approved   Dana Lead
+```
+
+Verified (Milestone 5):
+- `make gateway-test`: 177 gateway tests (real OPA binary) + 9 mock-API tests. They cover an audit row for every outcome (including a cancelled call), audit down, rate limits, PII masking, and every approval path, including a decision on a request another process already closed, an unsigned form link, and the webhook secret: approved, rejected, timed out, n8n down or answering nonsense, a look-alike form host, wrong or replayed tokens, a decision that cannot be recorded, and policy refusing before a human is asked.
+- `make opa-test`: 21/21 Rego tests, including nested restricted argument names and the shared reason-code list.
+- `REQUIRE_GATEWAY=1 make test P=01` on the default stack: 86 tests, none skipped, with real Keycloak, OPA, Postgres and n8n. The approval tests act as the human: they open the real n8n form and submit Approve or Reject.
+- The same command on the live stack (Salesforce + SAP sandbox, audit log in Neon as `gateway_audit`): 86 tests, 3 seed-only comparisons skipped. `make live-check`: all four read tools return data.
+- `make eval P=01`: 13/13, baseline updated.
 
 **Milestone 4 (authorization with OPA): done.** A valid token is no longer enough. Open Policy Agent 1.22.2 runs in Docker Compose and decides every tool call from the scopes and regions in the caller's Keycloak token; the gateway enforces the decision and denies when it cannot get one. Policy: [`policy/gateway.rego`](policy/gateway.rego). Details: [gateway/README.md](gateway/README.md#authorization-opa).
 
@@ -93,7 +145,7 @@ cs-rep           search_accounts    "Pinecrest"  ->  {"matches": [], "hidden_out
 cs-lead          get_open_invoices  ACCT-1003    ->  1 open invoice
 ```
 
-**Tradeoff: "access denied" discloses that a record exists.** A rep who asks for an order outside their region learns that the order is real. That is deliberate here: reps are internal users, the message tells them who can help, and the copilot can hand the request to a CS lead instead of telling a customer the order does not exist. A gateway serving external callers should answer "not found" instead. A record that does not exist is still "not found" for everyone. Search goes one step further: `hidden_out_of_region` counts the matches a rep may not see, so a rep can learn that an account with a given name exists in another region. That is accepted for internal reps for the same reason, and the Milestone 5 rate limits bound how fast anyone can probe it.
+**Tradeoff: "access denied" discloses that a record exists.** A rep who asks for an order outside their region learns that the order is real. That is deliberate here: reps are internal users, the message tells them who can help, and the copilot can hand the request to a CS lead instead of telling a customer the order does not exist. A gateway serving external callers should answer "not found" instead. A record that does not exist is still "not found" for everyone. Search goes one step further: `hidden_out_of_region` counts the matches a rep may not see, so a rep can learn that an account with a given name exists in another region. That is accepted for internal reps for the same reason, and the per-client rate limits (Milestone 5) bound how fast anyone can probe it.
 
 | Authorization (Milestone 4) | What works now |
 |---|---|
@@ -235,16 +287,16 @@ gateway log
 | Perceive | `CaseRequestPerceiver`: free text or an inbound case → `Percept` with sales orders, POs, invoices, shipments and accounts (incl. aliases such as BBO) |
 | State | Live case snapshot (account, open orders, shipment lateness, open invoice totals), re-read every iteration and **filtered by the caller's scopes** |
 | Act | 5 tools over in-process mock CRM, ERP, carrier and AR systems (`mock_systems/`, deterministic by seed); the gateway replaces them in Milestone 6 |
-| Guardrails | Scopes; a deny-by-default local policy (pricing, credit-limit and payment-term changes always denied; OPA in Milestone 4); writes fail closed until the n8n approval webhook (Milestone 5); budgets; PII masking of everything returned (answers and escalations). Progress files and traces keep raw tool output as internal, git-ignored audit records; masking at rest is decided with the audit log in Milestone 5 |
+| Guardrails | Scopes; a deny-by-default local policy (pricing, credit-limit and payment-term changes always denied; OPA in Milestone 4); writes run only with an explicit human approval (none is installed by default); budgets; PII masking of everything returned (answers and escalations) and, since Milestone 5, of progress files and traces at rest |
 | Goal achieved? | Deterministic `EvidenceBackedAnswerVerifier` (below) |
 | RAG, Skills, Plan, Memory, Harness, Observe | Cited policy chunks, trigger-matched skills, plan-and-execute, SQLite long-term memory (pgvector in Milestone 6), progress files, JSONL trace |
 
 **Anti-hallucination guardrail: no invented IDs.** The verifier rejects an answer if any order, PO, invoice, shipment, account or case ID in it (`SO-`, `PO-`, `INV-`, `SHP-`, `ACCT-`, `CASE-` plus digits, any length) does not appear in the request or in a successful tool result. The same goes for money: every dollar amount must equal a number a tool returned, because deterministic code computes totals and the model only quotes them. Every entity in the request must be both addressed and looked up by a tool (a "not found" lookup counts; a policy citation never backs a claim about a customer's order). Every `[source.md#n]` citation must be a real knowledge chunk, and policy questions need a tool result or a valid citation. A rejected answer goes back to the reasoner with the reason, inside the iteration budget; the `invented-id-rejected-then-corrected` eval shows that loop. These checks catch fabricated identifiers and amounts; they do not prove every sentence true, which is what the real-model evals are for.
 
-### Evals (scripted LLM; baseline updated in Milestone 4: 8 → 10 cases)
+### Evals (scripted LLM; baseline updated in Milestone 5: 10 → 13 cases)
 Scripted evals replay a fixed model script per case (`fixtures/llm/`), so they test the harness: tool selection, guardrails, verifier and citations, not model judgment. The real-model baseline (`evals/baseline.ollama.json`) arrives in Milestone 7.
 
-Success 100% · tool selection 100% · avg cost $0.0027 (scripted) · avg iterations 2.6
+Success 100% · tool selection 100% · avg cost $0.0028 (scripted) · avg iterations 2.69
 
 | Case | Result | Tools used | What it shows |
 |---|---|---|---|
@@ -258,6 +310,9 @@ Success 100% · tool selection 100% · avg cost $0.0027 (scripted) · avg iterat
 | invented-id-rejected-then-corrected | PASS | get_sales_order, track_shipment | Verifier rejects an invented shipment ID; the model looks it up and corrects itself |
 | out-of-region-order-denied | PASS | - | A Central rep asks about a West account's order: the policy denies the order and the tracking lookup, and the agent escalates to a CS lead citing `data-access-policy.md` instead of working around it (Milestone 4) |
 | lead-cross-region-allowed | PASS | get_sales_order, track_shipment | The same question from a CS lead, who sees every region (Milestone 4) |
+| lead-create-case-approved | PASS | search_accounts, create_case | A human approves, so the case is created (Milestone 5) |
+| lead-create-case-rejected | PASS | search_accounts | A human rejects: nothing is written and the agent says so (Milestone 5) |
+| lead-create-case-approval-timeout | PASS | search_accounts | No human answers in time: the approval gate fails closed and the agent reports it without retrying (Milestone 5) |
 
 Oversized input (over 4,000 characters) is rejected by the input guardrail before any model call; that is covered by a unit test rather than an eval case.
 

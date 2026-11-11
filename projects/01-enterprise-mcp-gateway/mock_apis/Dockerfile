@@ -3,6 +3,8 @@
 # Reproducible: base image pinned by digest; every Python package pinned with hashes in requirements.lock
 # (regenerate with ./lock-deps.sh mock_apis).
 FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS base
+# Lets `make up` / `make gateway-test` delete this project's superseded builds (dangling images).
+LABEL org.ridgeline.project="ridgeline-portfolio"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

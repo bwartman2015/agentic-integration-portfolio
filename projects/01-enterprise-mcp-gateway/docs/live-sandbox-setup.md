@@ -1,4 +1,4 @@
-# Live sandbox setup: Salesforce and SAP
+# Live sandbox setup: Salesforce, SAP and Neon
 
 The gateway works offline by default. Milestone 2's live check needs two free accounts:
 
@@ -7,7 +7,7 @@ The gateway works offline by default. Milestone 2's live check needs two free ac
 | Salesforce Developer Edition | `search_accounts` | `CRM_BACKEND=salesforce` | An External Client App using the OAuth 2.0 **client credentials** flow |
 | SAP Business Accelerator Hub sandbox | `get_sales_order` | `ERP_BACKEND=sap_sandbox` | Your personal API key |
 
-The mock carrier and AR APIs need nothing from you. `make up P=01` generates their shared secrets.
+The mock carrier and AR APIs need nothing from you. `make up P=01` generates their shared secrets. Keeping the audit log in Neon instead of the local Postgres is optional: see [section 6](#6-optional-keep-the-audit-log-in-neon-milestone-5).
 
 > **Secrets go only in `projects/01-enterprise-mcp-gateway/.env`.** That file is git-ignored and created with owner-only permissions. Never paste a secret into a chat, an issue, a commit or a screenshot. If one leaks, rotate it: in Salesforce, regenerate the consumer secret; in SAP, sign out and back in to get a new key.
 
@@ -112,6 +112,60 @@ Notes:
 - **MCP Inspector:** run `make token P=01 CLIENT=cs-rep` and paste the output as the Bearer token (Authentication → Bearer Token). It's valid for 5 minutes.
 - **Keycloak admin console:** `http://localhost:8080/`, user `admin`, password = `KC_ADMIN_PASSWORD` in `.env`.
 
+## 5b. Approvals: create the n8n owner account (Milestone 5, once)
+The approval forms work without logging in, but n8n's editor (where the workflow and its runs are visible) is open to whoever claims it first. Claim it right after the first `make up P=01`:
+1. Open http://localhost:5678. The page says **Set up owner account**.
+2. Enter an email you'll remember (it stays in n8n's database on your machine and is never verified), your name, and a password with at least 8 characters, one number and one capital letter. Click **Next**.
+3. If a box offers paid features for free, click **Skip**. The workflow **Ridgeline: approve a gateway write** is listed as published. Don't edit it in the UI: it is re-imported from `n8n/ridgeline-approval.json` at every start.
+
+To try an approval end to end: run `make request-case P=01` in one terminal, `make approvals P=01` in another, open the link it prints, choose **Approve**, type your name and submit within `APPROVAL_TIMEOUT_S` (120 s). Don't restart the stack while a request is waiting: the request can no longer be completed (nothing is written, and the next start closes it as `unavailable`).
+
+## 6. Optional: keep the audit log in Neon (Milestone 5)
+By default the audit log lives in the local `audit-db` container, and `make up` and the tests use it. To keep it in [Neon](https://neon.com) (serverless Postgres, free plan) instead, set `DATABASE_URL` in `.env`. The copilot's pgvector memory will use the same URL in Milestone 6.
+
+`neon.ts`, `package.json`, `package-lock.json` and `.gitignore` in `projects/01-enterprise-mcp-gateway` belong to this optional setup only. They are the Neon CLI's project config and the two packages `neon.ts` needs. The gateway, the tests and the local stack never use them, and you don't need Node.js unless you set up Neon.
+
+1. Create a free Neon account and a project. Its `production` branch already has Postgres.
+2. Install the Neon CLI and sign in. The sign-in finishes in your browser:
+   ```bash
+   npm i -g neon@latest
+   neon login
+   ```
+3. Link this project. From `projects/01-enterprise-mcp-gateway`, using the IDs from the Neon console:
+   ```bash
+   neon init -y --no-agent-setup --org-id <org-id> --project-id <project-id> --branch production --services postgres
+   ```
+   This adds `DATABASE_URL` (pooled) and `DATABASE_URL_UNPOOLED` (direct) to `.env`, both as the database owner `neondb_owner`. Your other values are kept. You can also paste the connection strings from the Neon console (**Connect**) into `.env` yourself. They must contain `sslmode=require`.
+4. Create the audit tables in Neon. This is one time, and safe to repeat:
+   ```bash
+   make audit-init P=01    # applies audit/schema.sql as the owner, over the direct URL
+   ```
+5. Give the gateway its own least-privilege role:
+   ```bash
+   make audit-role P=01
+   ```
+   This creates (or, run again, rotates) the role `gateway_audit` with a random password, applies its grants, and rewrites `DATABASE_URL` in `.env` to connect as that role. It changes nothing else in `.env` and prints no password. `DATABASE_URL_UNPOOLED` stays the owner's URL, used only by `make audit-init` and `make audit-role`.
+   - **Grants:** the role gets the same rights as the local one: INSERT and SELECT on `audit_log`, and on `approvals` INSERT of the request columns, SELECT, and UPDATE of only `status`, `approver` and `decided_at`. It cannot update or delete audit rows, truncate, drop or alter tables, create tables, or turn off the triggers.
+   - **Why SQL, not the console:** the role is created with SQL on purpose. Neon makes roles created in its console, CLI or API members of `neon_superuser`, which would defeat least privilege.
+6. `make up P=01`. Check that `docker compose logs gateway` shows `"audit": {"store": "postgres", "source": "database_url", "host": "*.neon.tech"}`. `make audit P=01` now reads from Neon.
+
+**Keep Neon commands away from `DATABASE_URL`.** `neon env pull`, `neon deploy`, `neon link` and `neon checkout` write the owner's `DATABASE_URL` into `.env` by default, which would undo step 5. From now on:
+```bash
+neon env pull --file .env.neon     # a separate, git-ignored file; copy any value you need by hand
+neon deploy --no-env-pull
+neon checkout <branch> --no-env-pull
+```
+If one of them did overwrite `DATABASE_URL`, run `make audit-role P=01` again.
+
+How it behaves:
+- **TLS is enforced.** A remote `DATABASE_URL` without `sslmode=require` (or `verify-full`) stops the gateway at startup. `require` encrypts but does not check the server's certificate; **`sslmode=verify-full` is recommended** (change `require` to `verify-full` in `DATABASE_URL`). The gateway then checks Neon's certificate against the image's CA bundle. The URL is never logged; the startup line shows only the provider domain.
+- **Append-only twice over.** The role's grants allow only adding and reading. Triggers in `audit/schema.sql` also refuse UPDATE, DELETE and TRUNCATE on the audit log for every role, the owner included.
+- **Fail closed.** If Neon is unreachable or its compute is waking up past `AUDIT_TIMEOUT_S`, reads are refused (`audit_unavailable`). Retry after a few seconds.
+- **Restarts during an approval.** If the gateway restarts while a write is waiting for a human, that request can't be completed, and nothing is written. The next startup closes it as `unavailable`, and `make request-case` reports it in one line. Request again after the restart.
+- **Switch back:** empty `DATABASE_URL` in `.env`, then `make up P=01`. The local container keeps running either way, so switching needs no other change.
+
+**Never commit the URL.** It holds the database password. It lives only in the git-ignored `.env` (and `.env.neon`, if you pull into one), and `make safety` fails if a database URL with a password appears in a tracked file. If it leaks, run `make audit-role P=01` to rotate the gateway's password, and reset the owner's password in the Neon console.
+
 ## Troubleshooting
 | Symptom | Cause / fix |
 |---|---|
@@ -125,4 +179,6 @@ Notes:
 | Every SAP order comes back "not found" | A wrong `SAP_BASE_URL` path on `api.sap.com` also answers 404. Reset it to the default in `.env.example`. |
 | Alias search returns nothing | SOSL indexing lag. Retry after a few minutes, or search by name. |
 | Inspector or curl gets **401** from the gateway | No token, or it expired (5 minutes). Run `make token P=01 CLIENT=cs-rep` again. `docker compose logs gateway` shows the `auth_rejected` reason. |
+| `startup_failed ... DATABASE_URL must use TLS for a remote database` | Add `sslmode=require` to the URL in `.env` (Neon's console URL already has it). |
+| Every call is denied with `could not be recorded in the audit log` after switching to Neon | The tables are missing (run `make audit-init P=01`), or Neon is unreachable. `docker compose logs gateway` shows `"audited": false`. |
 | `make up` stops with `required variable KC_ADMIN_PASSWORD is missing` | `.env` was created before Milestone 3 and the backfill didn't run. Run `make up P=01` from the repo root; it adds the missing keys. |

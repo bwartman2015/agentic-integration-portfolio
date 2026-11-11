@@ -15,6 +15,15 @@ class SeedCrm:
         return get_systems().crm.find_accounts(query)
 
 
+class SeedCases:
+    """Where approved cases are written in Milestone 5: the seeded CRM's case list, in this process,
+    whatever CRM_BACKEND reads accounts from. (A live Salesforce Case write is a later, optional step.)"""
+
+    async def open_case(self, account_id: str, subject: str, summary: str) -> dict[str, Any]:
+        note_backend("seed")
+        return get_systems().crm.open_case(account_id, subject, summary)
+
+
 class SeedErp:
     async def fetch_order(self, sales_order: str) -> dict[str, Any] | None:
         note_backend("seed")

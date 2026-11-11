@@ -10,7 +10,7 @@ import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
-from typing import Any, Iterator, Protocol
+from typing import Any, Callable, Iterator, Protocol
 
 
 @dataclass
@@ -41,13 +41,30 @@ class InMemorySink:
         self.spans.append(span)
 
 
+def redact_strings(value: Any, redact: Callable[[str], str]) -> Any:
+    """Apply `redact` to every string value in a JSON-like structure (keys and non-strings unchanged),
+    so the result is still valid JSON with the same shape."""
+    if isinstance(value, str):
+        return redact(value)
+    if isinstance(value, dict):
+        return {k: redact_strings(v, redact) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [redact_strings(v, redact) for v in value]
+    return value
+
+
 class JSONLSink:
-    def __init__(self, path: str):
-        self.path = path
+    """`redact` (optional) masks every string before it is written, e.g. Guardrails.mask for PII at rest."""
+
+    def __init__(self, path: str, redact: Callable[[str], str] | None = None):
+        self.path, self.redact = path, redact
 
     def export(self, span: Span) -> None:
+        record = json.loads(json.dumps({**asdict(span), "latency_ms": span.latency_ms}, default=str))
+        if self.redact:
+            record = redact_strings(record, self.redact)
         with open(self.path, "a") as f:
-            f.write(json.dumps({**asdict(span), "latency_ms": span.latency_ms}, default=str) + "\n")
+            f.write(json.dumps(record) + "\n")
 
 
 LAYERS = {"perceive", "think", "remember", "plan", "act", "guardrails", "observe", "harness", "agent"}

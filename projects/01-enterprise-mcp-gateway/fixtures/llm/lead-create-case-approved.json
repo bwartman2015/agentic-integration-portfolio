@@ -1,0 +1,29 @@
+{
+  "description": "Eval: a cs-lead asks for a case and the human approver approves, so the case is created.",
+  "approval": "approve",
+  "responses": [
+    {
+      "type": "tool",
+      "tool": "search_accounts",
+      "args": {
+        "query": "Summit Contractors"
+      },
+      "reasoning": "Resolve the account."
+    },
+    {
+      "type": "tool",
+      "tool": "create_case",
+      "args": {
+        "account_id": "ACCT-1002",
+        "subject": "Late delivery",
+        "summary": "Customer reports a late delivery; confirm the new delivery window."
+      },
+      "reasoning": "Propose the case; a human approves it."
+    },
+    {
+      "type": "answer",
+      "reasoning": "The case was created after approval.",
+      "answer": "Case CASE-10001 was created for Summit Contractors LLC (ACCT-1002) after a human approved it."
+    }
+  ]
+}

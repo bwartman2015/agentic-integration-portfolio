@@ -183,6 +183,10 @@ class CrmConnector(Protocol):
     async def find_accounts(self, query: str) -> list[dict[str, Any]]: ...
 
 
+class CaseStore(Protocol):
+    async def open_case(self, account_id: str, subject: str, summary: str) -> dict[str, Any]: ...
+
+
 class ErpConnector(Protocol):
     async def fetch_order(self, sales_order: str) -> dict[str, Any] | None: ...
 

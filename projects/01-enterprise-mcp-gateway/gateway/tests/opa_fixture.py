@@ -12,13 +12,15 @@ from typing import Any
 from unittest import mock
 
 from ridgeline_gateway import server
+from ridgeline_gateway.audit import MemoryAudit
+from ridgeline_gateway.ratelimit import RateLimiter
 from ridgeline_gateway.policy import OpaPolicy, PolicyConfig, build_policy
 
 POLICY_DIR = pathlib.Path(__file__).resolve().parents[2] / "policy"
 OPA_URL = "http://127.0.0.1:18181"
 READ = ["ar.read", "crm.read", "erp.read", "shipping.read"]
 REP = {"client_id": "cs-rep", "scopes": READ, "regions": ["Central"]}
-LEAD = {"client_id": "cs-lead", "scopes": READ + ["crm.write"], "regions": ["*"]}
+LEAD = {"client_id": "cs-lead", "scopes": READ + ["crm.write", "crm.pii"], "regions": ["*"]}
 NO_SCOPES = {"client_id": "p01-expiry-test", "scopes": [], "regions": []}
 CRM_ONLY = {"client_id": "p01-crm-only-test", "scopes": ["crm.read"], "regions": ["Central"]}
 _process: subprocess.Popen | None = None
@@ -61,8 +63,22 @@ def use_policy(test: Any, principal: dict[str, Any] | None = LEAD) -> None:
     verified identity the HTTP layer would have supplied."""
     server.set_policy(real_policy())
     test.addCleanup(server.set_policy, None)
+    use_governance(test)
     if principal is not None:
         act_as(test, principal)
+
+
+def use_governance(test: Any) -> MemoryAudit:
+    """A working audit store and a fresh rate limiter for one test (as `test.audit`). Approvals stay
+    unconfigured (every write refused) unless the test installs an approver."""
+    test.audit = MemoryAudit()
+    server.set_audit(test.audit)
+    server.set_limiter(RateLimiter())
+    server.set_approver(None)
+    test.addCleanup(server.set_audit, None)
+    test.addCleanup(server.set_limiter, None)
+    test.addCleanup(server.set_approver, None)
+    return test.audit
 
 
 def act_as(test: Any, principal: dict[str, Any]) -> None:

@@ -1,30 +1,38 @@
-"""Ridgeline MCP gateway (Milestone 4: authorization).
+"""Ridgeline MCP gateway (Milestone 5: guardrails, audit, approvals).
 
 An MCP server (official `mcp` SDK, `MCPServer`, formerly FastMCP; streamable HTTP at /mcp) that exposes
-Ridgeline's enterprise systems as four read-only tools. Each tool calls a connector (`connectors/`),
-which has a `seed` backend (offline synthetic data) and a live backend (Salesforce, SAP sandbox, the
-mock carrier and AR APIs), chosen per system in `.env` (see config.py). Every /mcp request must carry a
-valid Keycloak access token (auth.py); /healthz and the RFC 9728 metadata stay open. Later milestones add:
-  M5 rate limits, PII masking, audit, approvals
+Ridgeline's enterprise systems as four read-only tools and one write tool (`create_case`). Each tool
+calls a connector (`connectors/`), which has a `seed` backend (offline synthetic data) and a live backend
+(Salesforce, SAP sandbox, the mock carrier and AR APIs), chosen per system in `.env` (see config.py).
+Every /mcp request must carry a valid Keycloak access token (auth.py); /healthz and the RFC 9728
+metadata stay open.
 
-Every tools/call goes through `GatewayServer.call_tool`, the single choke point for identity (M3),
-policy (M4) and audit (M5). In order, it:
-  1. rejects unknown tools;
-  2. asks OPA whether this caller may call this tool (scope rule; policy.py), and denies on any error;
-  3. rejects unexpected arguments and runs the tool, which reads the record and then asks OPA whether
-     the caller may see it (region rule) before returning anything;
-  4. refuses a result if the tool never asked for that data check (fail closed for future tools);
-  5. logs one JSON line for every outcome, with the verified client, the backend and the policy reason.
+Every tools/call goes through `GatewayServer.call_tool`, the single choke point. In order, it:
+  1. applies the caller's rate limit (ratelimit.py);
+  2. rejects unknown tools;
+  3. asks OPA whether this caller may call this tool (scope rule, restricted changes; policy.py), and
+     denies on any error;
+  4. rejects unexpected arguments and runs the tool, which reads the record and then asks OPA whether
+     the caller may see it (region rule) before returning anything. A write tool then asks a human
+     (approvals.py) and writes only after an explicit approval;
+  5. refuses a result if the tool never asked for that data check (fail closed for future tools);
+  6. masks contact emails and phone numbers unless the caller's token holds the PII scope (pii.py);
+  7. writes one audit row (audit.py) and one JSON log line for every outcome, with the verified client
+     and the reason. A read that cannot be audited is not returned.
 tools/list shows a caller only the tools its scopes cover. Crashes reach the client only as "Error
 executing tool <name>"; connector failures as a sanitized message; denials as "Access denied: ...".
 
-Security today: authentication (JWT, fail closed) and authorization (OPA, fail closed). The container
-only publishes on 127.0.0.1, Host and Origin headers are checked against an allowlist (DNS-rebinding
-protection), and arguments are validated against closed JSON Schemas. Secrets and tokens come only
-from the environment / request and are never logged.
+Other routes: POST /approvals/callback (n8n reports a human decision; one-time token per request),
+GET /approvals/pending (operator token; the approval links), GET /audit (token with the audit scope).
+
+Security today: authentication (JWT), authorization (OPA), approvals, audit and rate limits, all fail
+closed. The container only publishes on 127.0.0.1, Host and Origin headers are checked against an
+allowlist (DNS-rebinding protection), and arguments are validated against closed JSON Schemas. Secrets
+and tokens come only from the environment / request and are never logged.
 """
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import json
 import logging
@@ -37,6 +45,7 @@ from dataclasses import dataclass, field
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Annotated, Any
 
+import anyio
 from mcp.server.auth.provider import TokenVerifier
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError, UnexpectedToolError
@@ -47,18 +56,29 @@ from pydantic import Field, ValidationError
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+from .approvals import (DENIAL_REASONS, ApprovalConfig, ApprovalConfigError, Approver, NoApprover,
+                        build_approver)
+from .audit import (AUDIT_UNAVAILABLE, AuditConfig, AuditConfigError, AuditSink, AuditUnavailable,
+                    PostgresAudit, UnavailableAudit)
 from .auth import AuthConfig, AuthConfigError, build_verifier, current_principal
 from .config import ConfigError, load_settings
 from .connectors import ConnectorError, Connectors, NotFound, begin_upstream, build_connectors
 from .connectors.base import side_channel
-from .policy import (RESOURCE_NOT_CHECKED, AccessDenied, Decision, DenyAllPolicy, Policy, PolicyConfig,
-                     PolicyConfigError, build_policy, denial_message)
+from .pii import audit_args, mask_json_text, mask_value
+from .policy import (AUDIT_SCOPE, PII_SCOPE, RATE_LIMITED, RESOURCE_NOT_CHECKED, AccessDenied, Decision,
+                     DenyAllPolicy, Policy, PolicyConfig, PolicyConfigError, build_policy, denial_message)
+from .ratelimit import RateLimitConfig, RateLimitConfigError, RateLimiter
 
 SERVER_NAME = "ridgeline-gateway"
-SERVER_VERSION = "0.4.0"
+SERVER_VERSION = "0.5.0"
 SALES_ORDER_PATTERN = r"^SO-[0-9]{6}$"
 ACCOUNT_ID_PATTERN = r"^ACCT-[0-9]{4}$"
 ACCOUNT_QUERY_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9 &.,'-]{1,79}$"
+# Free text a human approver will read in a web form: letters, digits and plain punctuation only (no
+# angle brackets, quotes or braces), so it cannot carry markup or template syntax anywhere downstream.
+CASE_SUBJECT_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9 .,:;'()#/&-]{2,119}$"
+CASE_SUMMARY_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9 .,:;'()#/&%$@+!?-]{2,499}$"
+MAX_CALLBACK_BYTES = 4096
 # Trace headers are caller-supplied: only well-formed values are logged, anything else as "invalid".
 _TRACE_HEADERS = {
     "traceparent": re.compile(r"^[0-9a-f]{2}-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$"),
@@ -66,6 +86,7 @@ _TRACE_HEADERS = {
 }
 # openWorldHint: the tools reach external systems (Salesforce, SAP, carrier, AR) whose data changes.
 _READ_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True)
+_WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True)
 
 log = logging.getLogger("ridgeline.gateway")
 
@@ -100,6 +121,44 @@ def set_policy(policy: Policy | None) -> None:
     _policy = policy if policy is not None else DenyAllPolicy()
 
 
+_audit: AuditSink = UnavailableAudit()
+
+
+def get_audit() -> AuditSink:
+    """The audit store. Until main() (or a test) sets one, nothing can be recorded, so reads are refused."""
+    return _audit
+
+
+def set_audit(audit: AuditSink | None) -> None:
+    global _audit
+    _audit = audit if audit is not None else UnavailableAudit()
+
+
+_approver: Approver = NoApprover()
+
+
+def get_approver() -> Approver:
+    """The human-approval service for write tools. Until one is set, every write is refused."""
+    return _approver
+
+
+def set_approver(approver: Approver | None) -> None:
+    global _approver
+    _approver = approver if approver is not None else NoApprover()
+
+
+_limiter = RateLimiter()
+
+
+def get_limiter() -> RateLimiter:
+    return _limiter
+
+
+def set_limiter(limiter: RateLimiter | None) -> None:
+    global _limiter
+    _limiter = limiter if limiter is not None else RateLimiter()
+
+
 @dataclass
 class _CallAuth:
     """Authorization state of the tool call in progress (one per call, in a context variable)."""
@@ -110,6 +169,11 @@ class _CallAuth:
     hidden: int = 0                    # search results filtered out by the region rule
     policy_ms: float = 0.0
     reasons: list[str] = field(default_factory=list)     # reason code of the denial, for the call log
+    outcome: str = "ok"
+    error: str | None = None           # exception type name for crashes and upstream failures
+    write: bool = False                # set by a write tool: its approval record is its audit trail
+    approval_id: str | None = None
+    pii_masked: int = 0                # values masked in the result (caller lacks the PII scope)
 
 
 _call_auth: contextvars.ContextVar[_CallAuth | None] = contextvars.ContextVar("call_auth", default=None)
@@ -200,84 +264,152 @@ class GatewayServer(MCPServer):
         started = time.perf_counter()
         upstream = begin_upstream()
         tool = self._tool_manager.get_tool(name)
-        outcome, error = "ok", None
         auth = _CallAuth(current_principal(), name, dict(arguments) if isinstance(arguments, dict) else {})
         auth_token = _call_auth.set(auth)
+        result: Any = None
+        failure: BaseException | None = None
         try:
+            result = await self._governed_call(tool, name, arguments, context, auth)
+        except asyncio.CancelledError as exc:
+            # The client cancelled the request or went away. The call is still recorded (shielded
+            # below), then the cancellation goes on.
+            auth.outcome = "cancelled"
+            failure = exc
+        except Exception as exc:  # noqa: BLE001  re-raised below, after the call has been recorded
+            failure = exc
+        finally:
+            _call_auth.reset(auth_token)
+        # Unknown tool names and their arguments are caller-supplied text, so they are not recorded verbatim.
+        known = tool is not None
+        record = _call_record(name if known else "<unknown>", auth, started, context, upstream, known)
+        row = {**record, "reason": record.get("policy_reason"), "args": audit_args(auth.args) if known else {},
+               "trace_id": record.get("traceparent") or record.get("x_request_id")}
+        try:
+            # Shielded: a cancelled call is recorded too ("every call, allowed or denied, is audited").
+            with anyio.CancelScope(shield=True):
+                await get_audit().write(row)
+        except AuditUnavailable:
+            record["audited"] = False
+            if failure is None and not auth.write:
+                # A read that cannot be recorded is not returned. (An approved write is already recorded
+                # in the approvals table, and has happened: it is reported, with audited=false logged.)
+                record.update(outcome="denied", ok=False, policy_reason=AUDIT_UNAVAILABLE)
+                failure = AccessDenied(denial_message(Decision(False, AUDIT_UNAVAILABLE), auth.principal, name),
+                                       AUDIT_UNAVAILABLE)
+        log.info(json.dumps(record, sort_keys=True))
+        if failure is not None:
+            raise failure
+        return result
+
+    async def _governed_call(self, tool: Any, name: str, arguments: dict[str, Any], context: Context | None,
+                             auth: _CallAuth) -> Any:
+        try:
+            if not get_limiter().allow(str(auth.principal.get("client_id") or "<anonymous>")):
+                raise AccessDenied(denial_message(Decision(False, RATE_LIMITED), auth.principal, name), RATE_LIMITED)
             if tool is None:
-                outcome = "unknown_tool"
+                auth.outcome = "unknown_tool"
                 raise ToolError("Unknown tool.")
             decision = await _decide(auth)
             if not decision.allow:
                 raise AccessDenied(denial_message(decision, auth.principal, name), decision.reason)
             unexpected = sorted(set(arguments) - set(tool.parameters.get("properties", {})))
             if unexpected:
-                outcome = "invalid_arguments"
+                auth.outcome = "invalid_arguments"
                 raise ToolError(f"Unexpected argument(s) for {name}: {', '.join(unexpected)}")
             result = await super().call_tool(name, arguments, context)
             if not auth.resource_checked:
                 # A tool that returns data without the data check is a bug: refuse instead of leaking.
                 raise AccessDenied(denial_message(Decision(False, RESOURCE_NOT_CHECKED), auth.principal, name),
                                    RESOURCE_NOT_CHECKED)
+            if PII_SCOPE not in (auth.principal.get("scopes") or []):
+                auth.pii_masked = _mask_result(result)
             return result
         except AccessDenied as exc:
-            outcome = "denied"
+            auth.outcome = "denied"
             auth.reasons = [exc.reason]
             raise
         except UnexpectedToolError as exc:
             # The SDK already sends the client only "Error executing tool <name>"; the type stays here.
-            outcome, error = "error", type(exc.__cause__).__name__
+            auth.outcome, auth.error = "error", type(exc.__cause__).__name__
             raise
         except ToolError as exc:
             if isinstance(exc.__cause__, AccessDenied):
                 # Raised inside the tool by the data check; the SDK wrapped it. Send the denial itself.
-                outcome = "denied"
+                auth.outcome = "denied"
                 auth.reasons = [exc.__cause__.reason]
                 raise exc.__cause__ from None
-            if outcome == "ok":
+            if auth.outcome == "ok":
                 cause = exc.__cause__
-                outcome = ("not_found" if isinstance(cause, NotFound)
-                           else "upstream_error" if isinstance(cause, ConnectorError)
-                           else "invalid_arguments" if isinstance(cause, ValidationError) else "error")
+                auth.outcome = ("not_found" if isinstance(cause, NotFound)
+                                else "upstream_error" if isinstance(cause, ConnectorError)
+                                else "invalid_arguments" if isinstance(cause, ValidationError) else "error")
                 if isinstance(cause, ConnectorError):
-                    error = type(cause).__name__
+                    auth.error = type(cause).__name__
             raise
         except Exception as exc:
-            outcome, error = "error", type(exc).__name__
+            auth.outcome, auth.error = "error", type(exc).__name__
             raise
-        finally:
-            _call_auth.reset(auth_token)
-            # Unknown tool names are caller-supplied text, so they are not logged verbatim.
-            extra = {**auth.principal, "backend": upstream.backend or None, "upstream_status": upstream.status,
-                     "upstream_ms": upstream.ms if upstream.calls else None,
-                     "upstream_calls": upstream.calls or None,
-                     "policy_reason": auth.reasons[0] if outcome == "denied" and auth.reasons else None,
-                     "policy_ms": auth.policy_ms if tool is not None else None,
-                     "hidden_out_of_region": auth.hidden or None}
-            _log_call(name if tool is not None else "<unknown>", outcome, started, context, error, extra)
 
 
-def _log_call(tool: str, outcome: str, started: float, context: Context | None, error: str | None,
-              extra: dict[str, Any] | None = None) -> None:
-    """OBSERVE: one structured line per tool call, whatever the outcome. Argument values and unknown
-    tool names are not logged (they are caller-supplied and can hold customer data). A denial logs
-    outcome "denied" with the policy's reason code. The JSON-RPC request id and any trace header are
-    kept so the M5 audit table can join to agent traces."""
-    record: dict[str, Any] = {"event": "tool_call", "tool": tool, "outcome": outcome, "ok": outcome == "ok",
-                              "latency_ms": round((time.perf_counter() - started) * 1000, 2)}
-    record.update({k: v for k, v in (extra or {}).items() if v is not None})
-    if error:
-        record["error_type"] = error
+def _mask_result(result: Any) -> int:
+    """Mask PII in a tool result in place (structured content and its text form). Returns the number
+    of values masked. Any surprise in the result's shape raises, so nothing unmasked is returned."""
+    masked_total = 0
+    structured = getattr(result, "structured_content", None)
+    if structured is not None:
+        result.structured_content, masked_total = mask_value(structured)
+    for block in getattr(result, "content", None) or []:
+        text = getattr(block, "text", None)
+        if isinstance(text, str):
+            block.text, n = mask_json_text(text)
+            masked_total = max(masked_total, n)
+    return masked_total
+
+
+def _trace_fields(context: Context | None) -> dict[str, Any]:
+    """The JSON-RPC request id and any well-formed trace header, so audit rows join to agent traces."""
+    fields: dict[str, Any] = {}
     if context is not None:
         try:
-            record["request_id"] = context.request_id
+            fields["request_id"] = str(context.request_id)
             headers = context.headers or {}
         except (AttributeError, ValueError, LookupError):
             headers = {}
         for h, pattern in _TRACE_HEADERS.items():
             value = headers.get(h)
             if value:
-                record[h.replace("-", "_")] = value if pattern.fullmatch(value) else "invalid"
+                fields[h.replace("-", "_")] = value if pattern.fullmatch(value) else "invalid"
+    return fields
+
+
+def _call_record(tool: str, auth: _CallAuth, started: float, context: Context | None, upstream: Any,
+                 known_tool: bool) -> dict[str, Any]:
+    """OBSERVE: the record of one tool call, whatever the outcome. It is written to the audit table and
+    logged as one JSON line. Argument values are not in it (the audit row stores them masked); a denial
+    has outcome "denied" and the reason code."""
+    record: dict[str, Any] = {"event": "tool_call", "tool": tool, "outcome": auth.outcome,
+                              "ok": auth.outcome == "ok",
+                              "latency_ms": round((time.perf_counter() - started) * 1000, 2)}
+    extra = {**auth.principal, "backend": upstream.backend or None, "upstream_status": upstream.status,
+             "upstream_ms": upstream.ms if upstream.calls else None, "upstream_calls": upstream.calls or None,
+             "policy_reason": auth.reasons[0] if auth.outcome == "denied" and auth.reasons else None,
+             "policy_ms": auth.policy_ms if known_tool else None, "hidden_out_of_region": auth.hidden or None,
+             "pii_masked": auth.pii_masked or None, "approval_id": auth.approval_id,
+             "error_type": auth.error}
+    record.update({k: v for k, v in extra.items() if v is not None})
+    record.update(_trace_fields(context))
+    return record
+
+
+def _log_call(tool: str, outcome: str, started: float, context: Context | None, error: str | None,
+              extra: dict[str, Any] | None = None) -> None:
+    """One structured line for an event outside call_tool (kept for callers that log a call directly)."""
+    record: dict[str, Any] = {"event": "tool_call", "tool": tool, "outcome": outcome, "ok": outcome == "ok",
+                              "latency_ms": round((time.perf_counter() - started) * 1000, 2)}
+    record.update({k: v for k, v in (extra or {}).items() if v is not None})
+    if error:
+        record["error_type"] = error
+    record.update(_trace_fields(context))
     log.info(json.dumps(record, sort_keys=True))
 
 
@@ -289,6 +421,8 @@ async def _lifespan(_server: MCPServer):
         if _connectors is not None:
             await _connectors.aclose()
         await _policy.aclose()
+        await _approver.aclose()
+        await _audit.aclose()
 
 
 mcp = GatewayServer(
@@ -297,8 +431,10 @@ mcp = GatewayServer(
     title="Ridgeline Supply Co. MCP gateway",
     version=SERVER_VERSION,
     instructions=("Ridgeline Supply Co. MCP gateway (synthetic data). Four read-only tools over CRM, ERP, "
-                  "carrier and AR systems. Requires a Keycloak access token (OAuth 2.0 client credentials). "
-                  "Each tool needs its scope, and records are visible only for accounts in the caller's regions."),
+                  "carrier and AR systems, and create_case, a write that runs only after a human approves it. "
+                  "Requires a Keycloak access token (OAuth 2.0 client credentials). Each tool needs its scope, "
+                  "records are visible only for accounts in the caller's regions, contact details are masked "
+                  "without the PII scope, and every call is rate limited and audited."),
 )
 
 
@@ -384,6 +520,96 @@ async def get_open_invoices(
     return {"account_id": account_id, "invoices": invoices, "count": len(invoices), "total_open": float(total)}
 
 
+@mcp.tool(title="Create case",
+          description=("Create a CRM case for an account (a write). It runs only after a human approves it in the "
+                       "approval workflow: the call waits for that decision and is refused on rejection or timeout."),
+          annotations=_WRITE)
+async def create_case(
+    account_id: Annotated[str, Field(description="Account number, for example ACCT-1002", pattern=ACCOUNT_ID_PATTERN)],
+    subject: Annotated[str, Field(description="Short case subject, for example Late delivery SO-104233",
+                                  pattern=CASE_SUBJECT_PATTERN)],
+    summary: Annotated[str, Field(description="What happened and the proposed next step (plain text)",
+                                  pattern=CASE_SUMMARY_PATTERN)],
+) -> dict[str, Any]:
+    auth = _current_call()
+    auth.write = True
+    with side_channel():
+        matches = await get_connectors().crm.find_accounts(account_id)
+    account = next((m for m in matches if m.get("account_id") == account_id), None)
+    if account is None:
+        raise NotFound(f"Account {account_id} was not found in CRM.")
+    region = account.get("region")
+    await _require_region(region if isinstance(region, str) and region else None)
+    # Agents propose; a human approves. Nothing is written unless the approver says "Approve".
+    details = {"account_id": account_id, "account_name": re.sub(r"[^A-Za-z0-9 .,&'()-]", "", str(account.get("name") or ""))[:80],
+               "subject": subject, "summary": summary}
+    try:
+        approval = await get_approver().request(auth.principal, auth.tool, details,
+                                                on_request_id=lambda rid: setattr(auth, "approval_id", rid))
+    except AuditUnavailable:
+        raise AccessDenied(denial_message(Decision(False, AUDIT_UNAVAILABLE), auth.principal, auth.tool),
+                           AUDIT_UNAVAILABLE) from None
+    auth.approval_id = approval.request_id
+    if not approval.approved:
+        reason = DENIAL_REASONS[approval.status]
+        raise AccessDenied(denial_message(Decision(False, reason), auth.principal, auth.tool), reason)
+    case = await get_connectors().cases.open_case(account_id, subject, summary)
+    return {**case, "approval": {"request_id": approval.request_id, "approved_by": approval.approver}}
+
+
+def _bearer(request: Request) -> str:
+    scheme, _, value = (request.headers.get("authorization") or "").partition(" ")
+    return value.strip() if scheme.lower() == "bearer" else ""
+
+
+@mcp.custom_route("/approvals/callback", methods=["POST"])
+async def approvals_callback(request: Request) -> JSONResponse:
+    """n8n reports a human decision. No bearer token: the proof is the one-time token that was given
+    only to this request's n8n execution. Unknown, expired or repeated callbacks change nothing."""
+    raw = await request.body()
+    try:
+        body = json.loads(raw) if len(raw) <= MAX_CALLBACK_BYTES else None
+    except ValueError:
+        body = None
+    if not isinstance(body, dict):
+        return JSONResponse({"ok": False, "error": "invalid request"}, status_code=400)
+    accepted = get_approver().resolve(body.get("request_id"), body.get("token"), body.get("decision"),
+                                      body.get("approver"))
+    log.info(json.dumps({"event": "approval_callback", "accepted": accepted}))
+    if not accepted:
+        return JSONResponse({"ok": False, "error": "no pending approval for this request"}, status_code=404)
+    return JSONResponse({"ok": True})
+
+
+@mcp.custom_route("/approvals/pending", methods=["GET"])
+async def approvals_pending(request: Request) -> JSONResponse:
+    """Operator only (APPROVAL_OPERATOR_TOKEN, which no agent client holds): the requests waiting for a
+    human, with their approval links. `make approvals P=01` prints this."""
+    token = _bearer(request)
+    if not token or not get_approver().operator_token_ok(token):
+        return JSONResponse({"error": "operator token required"}, status_code=401)
+    return JSONResponse({"pending": get_approver().pending()})
+
+
+@mcp.custom_route("/audit", methods=["GET"])
+async def audit_report(request: Request) -> JSONResponse:
+    """The audit report: totals by outcome and reason, recent calls and approval requests. Needs a valid
+    Keycloak token that holds the audit scope (`audit_scope` in policy/data.json)."""
+    verifier = mcp._token_verifier
+    token = _bearer(request)
+    access = await verifier.verify_token(token) if verifier is not None and token else None
+    if access is None:
+        return JSONResponse({"error": "a valid access token is required"}, status_code=401)
+    if AUDIT_SCOPE not in (access.scopes or []):
+        return JSONResponse({"error": f"scope {AUDIT_SCOPE} is required"}, status_code=403)
+    raw_limit = request.query_params.get("limit", "50")
+    limit = int(raw_limit) if raw_limit.isdigit() else 50
+    try:
+        return JSONResponse(await get_audit().report(limit))
+    except AuditUnavailable:
+        return JSONResponse({"error": "the audit store is unavailable"}, status_code=503)
+
+
 @mcp.custom_route("/healthz", methods=["GET"])
 async def healthz(_: Request) -> JSONResponse:
     """Liveness for Docker's healthcheck. Unauthenticated by design; reveals no data or configuration."""
@@ -410,6 +636,30 @@ def configure_logging() -> None:
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
+async def close_orphaned_approvals(audit: AuditSink) -> list[str]:
+    """Startup: approval requests left `pending` by a gateway that stopped while a human was deciding
+    are closed as `unavailable`. Nothing was written for them, and no process can resolve them now (a
+    late form submission reaches no waiting request; the gateway answers it with 404). Failure is
+    logged, not fatal: the audit store is checked again on every call."""
+    try:
+        closed = await audit.close_orphaned_approvals()
+    except AuditUnavailable as exc:
+        log.warning(json.dumps({"event": "orphaned_approvals_not_checked", "reason": str(exc)}))
+        return []
+    if closed:
+        log.info(json.dumps({"event": "orphaned_approvals_closed", "count": len(closed), "request_ids": closed}))
+    return closed
+
+
+async def _close_orphans_once(config: AuditConfig) -> None:
+    # Its own short-lived connection: the server's pool is created later, on the server's event loop.
+    sink = PostgresAudit(config)
+    try:
+        await close_orphaned_approvals(sink)
+    finally:
+        await sink.aclose()
+
+
 def main() -> None:
     configure_logging()
     try:
@@ -427,12 +677,28 @@ def main() -> None:
     except PolicyConfigError as exc:
         log.error(json.dumps({"event": "startup_failed", "reason": str(exc)}))
         raise SystemExit(2) from None
+    try:
+        audit_config = AuditConfig.from_env(dict(os.environ))
+        approval_config = ApprovalConfig.from_env(dict(os.environ))
+        rate_config = RateLimitConfig.from_env(dict(os.environ))
+    except (AuditConfigError, ApprovalConfigError, RateLimitConfigError) as exc:
+        log.error(json.dumps({"event": "startup_failed", "reason": str(exc)}))
+        raise SystemExit(2) from None
     mcp.enable_auth(auth, build_verifier(auth, settings.http_timeout_s))
     set_policy(build_policy(policy))
     set_connectors(build_connectors(settings))
+    asyncio.run(_close_orphans_once(audit_config))
+    audit = PostgresAudit(audit_config)
+    set_audit(audit)
+    set_approver(build_approver(approval_config, audit, settings.http_timeout_s))
+    set_limiter(RateLimiter(rate_config))
     log.info(json.dumps({"event": "startup", "version": SERVER_VERSION, "backends": settings.backends(),
                          "auth": {"issuer": auth.issuer, "audience": auth.audience},
-                         "policy": {"engine": "opa", "timeout_s": policy.timeout_s}}))
+                         "policy": {"engine": "opa", "timeout_s": policy.timeout_s},
+                         "audit": {"store": "postgres", "source": audit_config.source, "host": audit_config.host},
+                         "approvals": {"engine": "n8n", "timeout_s": approval_config.timeout_s},
+                         "rate_limit": {"per_minute": rate_config.per_minute,
+                                        "overrides": len(rate_config.overrides)}}))
     mcp.run(
         "streamable-http",
         host=os.environ.get("GATEWAY_HOST", "127.0.0.1"),

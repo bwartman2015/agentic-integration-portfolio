@@ -11,6 +11,27 @@
       "create_case"
     ],
     "restricted_pattern": "(?i)pric|discount|rebate|credit[_ -]?limit|payment[_ -]?terms?",
-    "name_pattern": "^[A-Za-z0-9_.-]{1,64}$"
+    "name_pattern": "^[A-Za-z0-9_.-]{1,64}$",
+    "pii_scope": "crm.pii",
+    "audit_scope": "audit.read",
+    "reasons": [
+      "allowed",
+      "invalid_request",
+      "restricted_change",
+      "unknown_tool",
+      "missing_scope",
+      "region_unknown",
+      "out_of_region"
+    ],
+    "gateway_reasons": [
+      "policy_unavailable",
+      "policy_error",
+      "resource_not_checked",
+      "rate_limited",
+      "approval_denied",
+      "approval_timeout",
+      "approval_unavailable",
+      "audit_unavailable"
+    ]
   }
 }

@@ -237,5 +237,87 @@
       "5 of 10"
     ],
     "max_iterations": 4
+  },
+  {
+    "id": "lead-create-case-approved",
+    "input": "Open a late-delivery case for Summit Contractors.",
+    "scopes": [
+      "crm.read",
+      "crm.write",
+      "erp.read",
+      "shipping.read",
+      "ar.read"
+    ],
+    "attributes": {
+      "regions": [
+        "*"
+      ]
+    },
+    "max_iterations": 4,
+    "expect_status": "answered",
+    "expect_tools": [
+      "search_accounts",
+      "create_case"
+    ],
+    "forbid_tools": [],
+    "expect_answer_contains": [
+      "CASE-10001",
+      "approved"
+    ]
+  },
+  {
+    "id": "lead-create-case-rejected",
+    "input": "Open a late-delivery case for Summit Contractors.",
+    "scopes": [
+      "crm.read",
+      "crm.write",
+      "erp.read",
+      "shipping.read",
+      "ar.read"
+    ],
+    "attributes": {
+      "regions": [
+        "*"
+      ]
+    },
+    "max_iterations": 4,
+    "expect_status": "answered",
+    "expect_tools": [
+      "search_accounts"
+    ],
+    "forbid_tools": [
+      "create_case"
+    ],
+    "expect_answer_contains": [
+      "No case was created",
+      "not approved"
+    ]
+  },
+  {
+    "id": "lead-create-case-approval-timeout",
+    "input": "Open a late-delivery case for Summit Contractors.",
+    "scopes": [
+      "crm.read",
+      "crm.write",
+      "erp.read",
+      "shipping.read",
+      "ar.read"
+    ],
+    "attributes": {
+      "regions": [
+        "*"
+      ]
+    },
+    "max_iterations": 4,
+    "expect_status": "answered",
+    "expect_tools": [
+      "search_accounts"
+    ],
+    "forbid_tools": [
+      "create_case"
+    ],
+    "expect_answer_contains": [
+      "No case was created"
+    ]
   }
 ]

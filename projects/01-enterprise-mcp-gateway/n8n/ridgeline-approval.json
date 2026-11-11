@@ -1,0 +1,162 @@
+{
+  "id": "RidgelineApprove1",
+  "name": "Ridgeline: approve a gateway write",
+  "active": false,
+  "nodes": [
+    {
+      "id": "approval-request",
+      "name": "Approval request",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.2,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "ridgeline-approval",
+      "notes": "The MCP gateway posts every write that needs a human here (create_case). Requests without the shared X-Ridgeline-Approval header are refused.",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ridgeline-approval",
+        "responseMode": "responseNode",
+        "options": {},
+        "authentication": "headerAuth"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "RidgelineApprHdr1",
+          "name": "Gateway approval header"
+        }
+      }
+    },
+    {
+      "id": "acknowledge",
+      "name": "Acknowledge with the form link",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        240,
+        0
+      ],
+      "notes": "Answers the gateway at once with the signed link to this request's approval form.",
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ received: true, request_id: $json.body.request_id, approval_url: $execution.resumeFormUrl }) }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "human-decision",
+      "name": "Human decision",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        480,
+        0
+      ],
+      "webhookId": "ridgeline-approval-form",
+      "notes": "Waits until a person opens the form and chooses Approve or Reject. The form closes when the gateway stops waiting (expires_in_s), so a late visitor sees an expired link.",
+      "parameters": {
+        "resume": "form",
+        "formTitle": "Approve a gateway write?",
+        "formDescription": "={{ 'Request ' + $('Approval request').item.json.body.request_id + ': agent ' + $('Approval request').item.json.body.client_id + ' asks to run ' + $('Approval request').item.json.body.tool + ' for ' + $('Approval request').item.json.body.account_id + ' (' + $('Approval request').item.json.body.account_name + '). Subject: ' + $('Approval request').item.json.body.subject + '. Summary: ' + $('Approval request').item.json.body.summary }}",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "Decision",
+              "fieldType": "dropdown",
+              "requiredField": true,
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "Approve"
+                  },
+                  {
+                    "option": "Reject"
+                  }
+                ]
+              }
+            },
+            {
+              "fieldLabel": "Approver",
+              "fieldType": "text",
+              "requiredField": true,
+              "placeholder": "Your name"
+            }
+          ]
+        },
+        "options": {
+          "respondWithOptions": {
+            "values": {
+              "respondWith": "text",
+              "formSubmittedText": "Decision sent to the gateway. If the request had already expired or the gateway restarted, nothing was written; the agent's terminal and `make audit` show the outcome."
+            }
+          }
+        },
+        "limitWaitTime": true,
+        "limitType": "afterTimeInterval",
+        "resumeAmount": "={{ $('Approval request').item.json.body.expires_in_s }}",
+        "resumeUnit": "seconds"
+      }
+    },
+    {
+      "id": "tell-gateway",
+      "name": "Tell the gateway",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        0
+      ],
+      "notes": "Reports the decision with the one-time token of this request. The gateway address is fixed here, never taken from the request. A request the gateway no longer waits for gets 404, which ends this run quietly; nothing is written for it.",
+      "parameters": {
+        "method": "POST",
+        "url": "http://gateway:8000/approvals/callback",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ request_id: $('Approval request').item.json.body.request_id, token: $('Approval request').item.json.body.callback_token, decision: $json.Decision, approver: $json.Approver }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "connections": {
+    "Approval request": {
+      "main": [
+        [
+          {
+            "node": "Acknowledge with the form link",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Acknowledge with the form link": {
+      "main": [
+        [
+          {
+            "node": "Human decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Human decision": {
+      "main": [
+        [
+          {
+            "node": "Tell the gateway",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

@@ -1,6 +1,6 @@
 [project]
 name = "ridgeline-gateway"
-version = "0.4.0"
+version = "0.5.0"
 description = "Ridgeline Supply Co. enterprise MCP gateway (fictional company, synthetic data)"
 requires-python = ">=3.11"
 # Top-level pins. The image installs the full hashed closure from requirements.lock
@@ -10,4 +10,5 @@ dependencies = [
     "httpx2==2.16.0",  # async HTTP client for the connectors (imported directly; also what the SDK uses)
     "PyJWT==2.15.1",  # JWT validation of Keycloak access tokens (auth.py)
     "cryptography==50.0.2",  # RS256 signature verification for PyJWT
+    "asyncpg==0.32.0",  # Postgres driver for the audit store (audit.py)
 ]

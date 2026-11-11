@@ -1,8 +1,11 @@
-# Project 01: Ridgeline enterprise MCP gateway + Keycloak + OPA + mock carrier and AR APIs.
+# Project 01: Ridgeline enterprise MCP gateway + Keycloak + OPA + Postgres (audit) + n8n (approvals)
+# + mock carrier and AR APIs.
 #   make up P=01             create/backfill .env (random secrets), build, start, wait until healthy
 #   make gateway-test P=01   build the images' test stages and run the gateway and mock-API tests
 #   make live-check P=01     call all four tools through MCP as cs-rep (real Keycloak token)
 #   make token P=01 CLIENT=cs-rep   print a 5-minute access token (e.g. for MCP Inspector)
+#   make audit P=01          the audit report (every call, allowed or denied, with its reason)
+#   make approvals P=01      write requests waiting for a human, with their approval links
 #   make down P=01           stop
 # Each container gets only the variables it needs (no env_file): Salesforce/SAP secrets reach the gateway
 # only, and each mock API only its own shared secret. The mock APIs sit on an internal-only network (no
@@ -12,7 +15,10 @@
 # container only, never the gateway, which needs only Keycloak's public signing keys.
 # OPA (Milestone 4) sits on its own internal network that only the gateway joins, serves the read-only
 # policy/ directory, and its API answers nothing but the two decision queries (policy/system_authz.rego).
-# Postgres and n8n join in M5-M6.
+# Audit and approvals (Milestone 5): Postgres holds the audit log on an internal network that only the
+# gateway joins; the gateway's database role can add and read audit rows but not change or delete them.
+# n8n runs the human-approval workflow (n8n/ridgeline-approval.json, imported at every start) and is
+# published on loopback so a person can open the approval form.
 name: ridgeline-p01
 
 services:
@@ -21,9 +27,9 @@ services:
       context: .
       dockerfile: gateway/Dockerfile
       target: runtime
-    image: ridgeline/mcp-gateway:0.4.0
+    image: ridgeline/mcp-gateway:0.5.0
     pull_policy: build
-    networks: [edge, backend, policy]
+    networks: [edge, backend, policy, audit, approvals]
     ports:
       # Published on loopback only (no TLS in this local stack).
       - "127.0.0.1:${GATEWAY_PORT:-8765}:8000"
@@ -39,6 +45,24 @@ services:
       # Authorization (Milestone 4): every call is decided by OPA; no answer in time means deny.
       OPA_URL: http://opa:8181
       OPA_TIMEOUT_S: "2"
+      # Audit (Milestone 5): every call is recorded; a read that cannot be recorded is not returned.
+      AUDIT_DB_HOST: audit-db
+      AUDIT_DB_NAME: audit
+      AUDIT_DB_USER: gateway_audit
+      AUDIT_DB_PASSWORD: ${AUDIT_DB_PASSWORD:?run make up P=01 to generate .env}
+      # Empty: the local audit-db above. Set in .env to a hosted Postgres URL (e.g. Neon, sslmode=require)
+      # to keep the audit log there instead; see docs/live-sandbox-setup.md. Never commit that URL.
+      DATABASE_URL: ${DATABASE_URL:-}
+      # Approvals (Milestone 5): write tools wait for a human decision in n8n; no decision in time = deny.
+      N8N_APPROVAL_URL: http://n8n:5678/webhook/ridgeline-approval
+      N8N_FORM_BASE_URL: http://localhost:${N8N_PORT:-5678}
+      APPROVAL_TIMEOUT_S: ${APPROVAL_TIMEOUT_S:-120}
+      APPROVAL_OPERATOR_TOKEN: ${APPROVAL_OPERATOR_TOKEN:?run make up P=01 to generate .env}
+      # Shared secret the gateway sends to n8n's webhook (n8n refuses requests without it).
+      APPROVAL_WEBHOOK_SECRET: ${APPROVAL_WEBHOOK_SECRET:?run make up P=01 to generate .env}
+      # Rate limits (Milestone 5): calls per minute per client; the test-only client gets a tiny budget.
+      RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-120}
+      RATE_LIMIT_OVERRIDES: p01-rate-test=5
       CRM_BACKEND: ${CRM_BACKEND:-seed}
       ERP_BACKEND: ${ERP_BACKEND:-seed}
       CARRIER_BACKEND: ${CARRIER_BACKEND:-http}
@@ -62,6 +86,10 @@ services:
         condition: service_healthy
       opa:
         condition: service_healthy
+      audit-db:
+        condition: service_healthy
+      n8n:
+        condition: service_healthy
     read_only: true
     tmpfs:
       - /tmp
@@ -70,6 +98,124 @@ services:
     security_opt:
       - no-new-privileges:true
     # Local dev stack: nothing restarts on its own after a reboot.
+    restart: "no"
+
+  audit-db:
+    # PostgreSQL 17.11, pinned by digest: the audit log and the approval records. Internal network, shared
+    # with the gateway only; not published to the host. audit/init.sh creates the schema and the gateway's
+    # append-only role the first time the volume is created.
+    image: postgres:17-alpine@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
+    user: postgres
+    networks: [audit]
+    mem_limit: 256m                  # plenty for the audit log; keeps Docker Desktop's VM headroom
+    expose:
+      - "5432"
+    environment:
+      POSTGRES_DB: audit
+      POSTGRES_PASSWORD: ${AUDIT_DB_ADMIN_PASSWORD:?run make up P=01 to generate .env}
+      AUDIT_DB_PASSWORD: ${AUDIT_DB_PASSWORD:?run make up P=01 to generate .env}
+    volumes:
+      - audit-data:/var/lib/postgresql/data
+      - ./audit/init.sh:/docker-entrypoint-initdb.d/10-audit.sh:ro
+      - ./audit/schema.sql:/audit/schema.sql:ro
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "audit"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/run/postgresql:uid=70,gid=70
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+
+  audit-init:
+    # One-off (`make audit-init P=01`): applies audit/schema.sql to a hosted database (Neon). Uses
+    # DATABASE_ADMIN_URL, else DATABASE_URL_UNPOOLED (Neon's direct URL), else DATABASE_URL. Only this
+    # container ever sees the admin URL; the gateway does
+    # not. Not started by `make up` (profile "admin"). The local audit-db runs the same file on its own.
+    image: postgres:17-alpine@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
+    profiles: ["admin"]
+    user: postgres
+    networks: [edge]
+    entrypoint: ["sh", "-c"]
+    command:
+      - >-
+        url="$${DATABASE_ADMIN_URL:-$${DATABASE_URL_UNPOOLED:-$$DATABASE_URL}}";
+        [ -n "$$url" ] || { echo "set DATABASE_ADMIN_URL (or DATABASE_URL) in .env first" >&2; exit 2; };
+        psql "$$url" -v ON_ERROR_STOP=1 --quiet -f /audit/schema.sql && echo "audit schema is in place"
+    environment:
+      DATABASE_ADMIN_URL: ${DATABASE_ADMIN_URL:-}
+      DATABASE_URL_UNPOOLED: ${DATABASE_URL_UNPOOLED:-}   # direct connection, preferred for schema changes
+      DATABASE_URL: ${DATABASE_URL:-}
+      PSQL_HISTORY: /dev/null
+    volumes:
+      - ./audit/schema.sql:/audit/schema.sql:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  n8n:
+    # n8n 2.47.3 (Community Edition), pinned by digest: the human-approval workflow for write tools.
+    # At every start: the webhook's shared-secret credential is loaded from APPROVAL_WEBHOOK_SECRET (n8n
+    # stores it encrypted; the temporary file lives in tmpfs and is removed), then the committed workflow
+    # n8n/ridgeline-approval.json is imported and published, so the running workflow is always that file.
+    # Networks: `approvals` (internal) is shared with the gateway only, so no agent container can reach
+    # n8n or its execution data; `n8n-public` exists only to publish the form on 127.0.0.1 for a person.
+    image: n8nio/n8n:2.47.3@sha256:6723b440354bb8e1395a1ecee12685fe03923f897bf6e4d5bb2c6c2bd2051697
+    entrypoint: ["sh", "-c"]
+    command:
+      - >-
+        umask 077 &&
+        printf '[{"id":"RidgelineApprHdr1","name":"Gateway approval header","type":"httpHeaderAuth","data":{"name":"X-Ridgeline-Approval","value":"%s"}}]' "$$APPROVAL_WEBHOOK_SECRET" > /tmp/approval-credential.json &&
+        n8n import:credentials --input=/tmp/approval-credential.json &&
+        rm -f /tmp/approval-credential.json &&
+        n8n import:workflow --input=/workflows/ridgeline-approval.json &&
+        n8n publish:workflow --id=RidgelineApprove1 &&
+        exec n8n start
+    networks: [approvals, n8n-public]
+    mem_limit: 768m
+    ports:
+      - "127.0.0.1:${N8N_PORT:-5678}:5678"
+    environment:
+      # Links in approval forms use this public address.
+      WEBHOOK_URL: http://localhost:${N8N_PORT:-5678}/
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:?run make up P=01 to generate .env}
+      N8N_SECURE_COOKIE: "false"                 # the editor is served over plain http on loopback
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "true"       # workflows cannot read this container's environment
+      N8N_DIAGNOSTICS_ENABLED: "false"           # no telemetry
+      N8N_VERSION_NOTIFICATIONS_ENABLED: "false"
+      N8N_TEMPLATES_ENABLED: "false"
+      N8N_PERSONALIZATION_ENABLED: "false"
+      N8N_HIRING_BANNER_ENABLED: "false"
+      N8N_PUBLIC_API_DISABLED: "true"            # no API-key access to workflows or execution data
+      EXECUTIONS_DATA_PRUNE: "true"              # finished executions (they hold case text) are deleted
+      EXECUTIONS_DATA_MAX_AGE: "168"             # after 7 days
+      APPROVAL_WEBHOOK_SECRET: ${APPROVAL_WEBHOOK_SECRET:?run make up P=01 to generate .env}
+    volumes:
+      - n8n-data:/home/node/.n8n
+      - ./n8n:/workflows:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:5678/healthz"]
+      interval: 5s
+      timeout: 5s
+      retries: 90            # a cold start next to the other services can take several minutes on a laptop
+      start_period: 30s
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     restart: "no"
 
   carrier-api:
@@ -136,6 +282,8 @@ services:
       CS_LEAD_CLIENT_SECRET: ${CS_LEAD_CLIENT_SECRET:?run make up P=01 to generate .env}
       P01_EXPIRY_TEST_CLIENT_SECRET: ${P01_EXPIRY_TEST_CLIENT_SECRET:?run make up P=01 to generate .env}
       P01_CRM_ONLY_TEST_CLIENT_SECRET: ${P01_CRM_ONLY_TEST_CLIENT_SECRET:?run make up P=01 to generate .env}
+      P01_RATE_TEST_CLIENT_SECRET: ${P01_RATE_TEST_CLIENT_SECRET:?run make up P=01 to generate .env}
+      P01_AUDITOR_CLIENT_SECRET: ${P01_AUDITOR_CLIENT_SECRET:?run make up P=01 to generate .env}
     volumes:
       - ./keycloak/ridgeline-realm.json:/opt/keycloak/data/import/ridgeline-realm.json:ro
     # Ephemeral database: every (re)start imports the committed realm exactly, with the current .env
@@ -147,8 +295,8 @@ services:
       test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 && grep -q '\"UP\"' <&3"]
       interval: 5s
       timeout: 5s
-      retries: 40
-      start_period: 20s
+      retries: 90            # a cold start next to the other services can take several minutes on a laptop
+      start_period: 30s
     cap_drop:
       - ALL
     security_opt:
@@ -190,9 +338,10 @@ services:
     restart: "no"
 
   ops:
-    # One-off operator tools (make live-check, make token): same image as the gateway, holds the agent
-    # client secrets so the gateway container never does. Not started by `make up` (profile "ops").
-    image: ridgeline/mcp-gateway:0.4.0
+    # One-off operator tools (make live-check, token, audit, approvals, request-case): same image as the
+    # gateway, holds the agent client secrets so the gateway container never does. Not started by
+    # `make up` (profile "ops").
+    image: ridgeline/mcp-gateway:0.5.0
     pull_policy: never
     profiles: ["ops"]
     networks: [edge]
@@ -201,6 +350,10 @@ services:
       CS_REP_CLIENT_SECRET: ${CS_REP_CLIENT_SECRET:?run make up P=01 to generate .env}
       CS_LEAD_CLIENT_SECRET: ${CS_LEAD_CLIENT_SECRET:?run make up P=01 to generate .env}
       LIVE_CHECK_URL: http://gateway:8000/mcp
+      GATEWAY_BASE_URL: http://gateway:8000
+      P01_AUDITOR_CLIENT_SECRET: ${P01_AUDITOR_CLIENT_SECRET:?run make up P=01 to generate .env}
+      APPROVAL_OPERATOR_TOKEN: ${APPROVAL_OPERATOR_TOKEN:?run make up P=01 to generate .env}
+      APPROVAL_TIMEOUT_S: ${APPROVAL_TIMEOUT_S:-120}
       CRM_BACKEND: ${CRM_BACKEND:-seed}
       ERP_BACKEND: ${ERP_BACKEND:-seed}
       CARRIER_BACKEND: ${CARRIER_BACKEND:-http}
@@ -219,3 +372,12 @@ networks:
     internal: true
   policy:
     internal: true
+  audit:
+    internal: true
+  approvals:
+    internal: true    # gateway <-> n8n only (approval requests and callbacks)
+  n8n-public: {}      # publishes the approval form on 127.0.0.1; no other service joins it
+
+volumes:
+  audit-data: {}      # the audit log survives `make down`; `docker volume rm ridgeline-p01_audit-data` resets it
+  n8n-data: {}        # n8n's own database (owner account, encrypted credential, pruned execution history)

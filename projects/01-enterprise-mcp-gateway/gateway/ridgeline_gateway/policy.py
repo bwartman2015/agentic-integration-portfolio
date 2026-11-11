@@ -14,6 +14,9 @@ policy response.
 """
 from __future__ import annotations
 
+import json
+import os
+import pathlib
 import re
 from dataclasses import dataclass
 from typing import Any, Mapping, Protocol
@@ -26,17 +29,34 @@ from .connectors.base import ConnectorError, HttpConnector, side_channel
 
 DECISION_PATH = "/v1/data/ridgeline/gateway/decision"
 ALLOWED_TOOLS_PATH = "/v1/data/ridgeline/gateway/allowed_tools"
-# Reason codes the policy may return, plus the gateway's own fail-closed codes.
-POLICY_REASONS = frozenset({"allowed", "invalid_request", "restricted_change", "unknown_tool", "missing_scope",
-                            "region_unknown", "out_of_region"})
-POLICY_UNAVAILABLE = "policy_unavailable"      # OPA unreachable, slow or returned an HTTP error
-POLICY_ERROR = "policy_error"                  # OPA answered, but not with a well-formed decision
-RESOURCE_NOT_CHECKED = "resource_not_checked"  # a tool returned data without asking for the data check
-_IDENT = re.compile(r"^[A-Za-z0-9._:-]{1,64}$")
+
+def load_policy_data(path: str | None = None) -> dict[str, Any]:
+    """policy/data.json, the same file OPA serves: the one list of reason codes, plus the scope names
+    the gateway enforces itself (PII, audit report). The image ships a copy next to the code."""
+    candidates = [path or os.environ.get("POLICY_DATA_FILE") or "",
+                  str(pathlib.Path(__file__).resolve().parents[2] / "policy" / "data.json")]
+    for candidate in filter(None, candidates):
+        if pathlib.Path(candidate).is_file():
+            return json.loads(pathlib.Path(candidate).read_text())["gateway_policy"]
+    raise PolicyConfigError("policy/data.json not found (set POLICY_DATA_FILE)")
 
 
 class PolicyConfigError(RuntimeError):
     """Raised at startup when authorization is not configured (the gateway never runs without policy)."""
+
+
+_DATA = load_policy_data()
+# Reason codes the policy may return, and the gateway's own fail-closed codes: one list for the Rego,
+# the gateway and the copilot (policy/data.json). A code the gateway does not know denies as policy_error.
+POLICY_REASONS: frozenset[str] = frozenset(_DATA["reasons"])
+GATEWAY_REASONS: frozenset[str] = frozenset(_DATA["gateway_reasons"])
+PII_SCOPE: str = _DATA["pii_scope"]
+AUDIT_SCOPE: str = _DATA["audit_scope"]
+POLICY_UNAVAILABLE = "policy_unavailable"      # OPA unreachable, slow or returned an HTTP error
+POLICY_ERROR = "policy_error"                  # OPA answered, but not with a well-formed decision
+RESOURCE_NOT_CHECKED = "resource_not_checked"  # a tool returned data without asking for the data check
+RATE_LIMITED = "rate_limited"                  # the client is over its per-minute call limit
+_IDENT = re.compile(r"^[A-Za-z0-9._:-]{1,64}$")
 
 
 @dataclass(frozen=True)
@@ -102,6 +122,18 @@ def denial_message(decision: Decision, principal: Mapping[str, Any], tool: str) 
     if decision.reason == "region_unknown":
         return ("Access denied: this record is not linked to an account with a known region, "
                 "so only a CS lead may read it.")
+    if decision.reason == "rate_limited":
+        return f"Access denied: {who} is over its call rate limit. Wait a minute and try again."
+    if decision.reason == "approval_denied":
+        return f"Access denied: a human approver rejected this {tool} request. Nothing was written."
+    if decision.reason == "approval_timeout":
+        return (f"Access denied: no human approved this {tool} request in time. Nothing was written; "
+                "ask again when an approver is available.")
+    if decision.reason == "approval_unavailable":
+        return (f"Access denied: the approval service could not be reached, so {tool} was refused. "
+                "Nothing was written.")
+    if decision.reason == "audit_unavailable":
+        return "Access denied: this call could not be recorded in the audit log, so it was refused."
     return "Access denied: the policy service could not authorize this call, so it was refused."
 
 

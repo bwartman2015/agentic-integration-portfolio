@@ -10,13 +10,18 @@
 # make opa-test P=01   Rego unit tests and format check for a project's policy/ directory, in its pinned OPA image
 # make live-check P=01 call every gateway tool through MCP with a real token; result per tool and configured backend
 # make token P=01 [CLIENT=cs-rep|cs-lead]  print a short-lived Keycloak access token (for MCP Inspector)
+# make audit P=01 [ARGS=--limit=20]  the gateway audit report: every call, allowed or denied, with its reason
+# make approvals P=01  write requests waiting for a human decision, with their approval links
+# make audit-init P=01  one time, for a hosted audit database (Neon): create the schema from audit/schema.sql
+# make audit-role P=01  hosted audit database: create/rotate the least-privilege gateway_audit role, update .env
+# make request-case P=01  as cs-lead, request a CRM case and wait for the human decision in n8n
 # make seed-salesforce P=01 [ARGS=--apply]  write synthetic Ridgeline accounts to the Salesforce dev org
 # make down P=01       stop a project's Docker Compose services
 PY ?= python3
 P ?=
 PROJECTS := $(if $(P),$(wildcard projects/$(P)*/),$(wildcard projects/*/))
 
-.PHONY: test core-test project-tests arch-check eval check demo up down gateway-test opa-test live-check seed-salesforce token
+.PHONY: test core-test project-tests arch-check eval check demo up down gateway-test opa-test live-check seed-salesforce token audit approvals request-case audit-init audit-role
 
 test: core-test project-tests
 
@@ -71,10 +76,18 @@ ENSURE_ENV = scripts/ensure-env.sh $$d
 # Compose interpolates required secrets even for `down`; dummy values satisfy those checks.
 COMPOSE_DUMMY_SECRETS = CARRIER_API_KEY=unused AR_API_TOKEN=unused KC_ADMIN_PASSWORD=unused \
 	CS_REP_CLIENT_SECRET=unused CS_LEAD_CLIENT_SECRET=unused P01_EXPIRY_TEST_CLIENT_SECRET=unused \
-	P01_CRM_ONLY_TEST_CLIENT_SECRET=unused
+	P01_CRM_ONLY_TEST_CLIENT_SECRET=unused P01_RATE_TEST_CLIENT_SECRET=unused AUDIT_DB_ADMIN_PASSWORD=unused \
+	AUDIT_DB_PASSWORD=unused N8N_ENCRYPTION_KEY=unused APPROVAL_OPERATOR_TOKEN=unused \
+	APPROVAL_WEBHOOK_SECRET=unused P01_AUDITOR_CLIENT_SECRET=unused
+
+# Each rebuild leaves the previous image untagged; delete those (only this repo's, by label) so local
+# image storage stays flat on a laptop's Docker Desktop.
+PRUNE_OLD_BUILDS = docker image prune -f --filter label=org.ridgeline.project=ridgeline-portfolio >/dev/null
 
 up:
-	$(call for_compose_projects,$(ENSURE_ENV); docker compose -f $$d/docker-compose.yml up -d --build --wait)
+	$(call for_compose_projects,$(ENSURE_ENV); status=0; \
+		docker compose -f $$d/docker-compose.yml up -d --build --wait || status=$$?; \
+		$(PRUNE_OLD_BUILDS); [ $$status -eq 0 ] || exit $$status)
 
 down:
 	$(call for_compose_projects,$(COMPOSE_DUMMY_SECRETS) docker compose -f $$d/docker-compose.yml --profile ops down)
@@ -84,7 +97,7 @@ gateway-test:
 		[ -f $$d/$$c/Dockerfile ] || continue; \
 		docker build -q --target test -f $$d/$$c/Dockerfile -t ridgeline/$$c:test $$d >/dev/null && \
 		docker run --rm --network none --read-only --tmpfs /tmp --cap-drop ALL ridgeline/$$c:test || exit 1; \
-	done)
+	done; $(PRUNE_OLD_BUILDS))
 
 # Rego unit tests (`opa test`) and a format check (`opa fmt`), in the OPA image the project's Compose file pins.
 opa-test:
@@ -101,6 +114,27 @@ live-check:
 # Prints a short-lived access token to stdout (e.g. for MCP Inspector); errors go to stderr. CLIENT=cs-rep | cs-lead
 token:
 	$(call for_compose_projects,docker compose -f $$d/docker-compose.yml --profile ops run --rm --no-deps -T ops python -m ridgeline_gateway.admin.token $(or $(CLIENT),cs-rep))
+
+# The audit report: totals by outcome and reason, recent calls and approvals (read as cs-lead, who holds audit.read).
+audit:
+	$(call for_compose_projects,docker compose -f $$d/docker-compose.yml --profile ops run --rm --no-deps -T ops python -m ridgeline_gateway.admin.audit_report $(ARGS))
+
+# Write requests waiting for a human decision, with their approval links (operator token; no agent holds it).
+approvals:
+	$(call for_compose_projects,docker compose -f $$d/docker-compose.yml --profile ops run --rm --no-deps -T ops python -m ridgeline_gateway.admin.approvals)
+
+# One time, for a hosted audit database (Neon): apply audit/schema.sql with DATABASE_ADMIN_URL (else DATABASE_URL).
+audit-init:
+	$(call for_compose_projects,docker compose -f $$d/docker-compose.yml --profile admin run --rm --no-deps -T audit-init)
+
+# For a hosted audit database: create or rotate the least-privilege gateway_audit role and point
+# DATABASE_URL in .env at it (no password is printed). Needs DATABASE_ADMIN_URL or DATABASE_URL_UNPOOLED.
+audit-role:
+	$(call for_compose_projects,$(PY) $$d/audit/create_role.py)
+
+# As cs-lead, ask the gateway to create a case and wait for a human to approve or reject it in n8n.
+request-case:
+	$(call for_compose_projects,docker compose -f $$d/docker-compose.yml --profile ops run --rm --no-deps -T ops python -m ridgeline_gateway.admin.request_case $(ARGS))
 
 # Dry run by default; ARGS=--apply writes the synthetic Ridgeline accounts to the Salesforce dev org.
 seed-salesforce:

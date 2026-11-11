@@ -5,7 +5,7 @@ from __future__ import annotations
 import io
 import json
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from typing import Any
 from unittest import mock
 from urllib.parse import parse_qs, urlsplit
@@ -13,7 +13,7 @@ from urllib.parse import parse_qs, urlsplit
 import httpx2
 
 from mock_systems import reset_systems
-from ridgeline_gateway.admin import live_check, seed_salesforce
+from ridgeline_gateway.admin import live_check, request_case, seed_salesforce
 from ridgeline_gateway.config import load_settings
 from ridgeline_gateway.connectors import ConnectorError
 
@@ -212,6 +212,39 @@ class TokenToolTests(unittest.IsolatedAsyncioTestCase):
         for body in ({"error": "unauthorized_client"}, {"access_token": "not a jwt"}):
             with self.assertRaises(ConnectorError):
                 await fetch_token("cs-rep", "x", url, transport=httpx2.MockTransport(lambda r, b=body: httpx2.Response(200, json=b)))
+
+
+class RequestCaseToolTests(unittest.TestCase):
+    """make request-case: a dropped stream or any other failure is one clear line, never a traceback."""
+
+    def run_main(self, failure: BaseException) -> tuple[int, str]:
+        async def fail(*_a: Any, **_k: Any) -> Any:
+            raise failure
+        err, out = io.StringIO(), io.StringIO()
+        with mock.patch.object(request_case, "request_case", fail), redirect_stderr(err), redirect_stdout(out):
+            code = request_case.main([])
+        return code, err.getvalue()
+
+    def test_gateway_dropping_the_stream_is_explained(self):
+        from mcp.shared.exceptions import MCPError
+        dropped = MCPError(-32000, "SSE stream ended without a response")
+        for failure in (dropped, BaseExceptionGroup("task group", [dropped]),
+                        ExceptionGroup("outer", [ExceptionGroup("inner", [httpx2.RemoteProtocolError("closed")])])):
+            code, err = self.run_main(failure)
+            self.assertEqual(code, 1)
+            self.assertIn("NOT CREATED: The gateway closed the connection before answering", err)
+            self.assertIn("Nothing was written", err)
+            self.assertNotIn("Traceback", err)
+
+    def test_other_failures_are_one_readable_line(self):
+        for failure, text in ((httpx2.ConnectError("refused"), "not reachable"),
+                              (httpx2.ReadTimeout("slow"), "No answer from the gateway in time"),
+                              (ConnectorError("Keycloak is unreachable."), "Keycloak"),
+                              (RuntimeError("boom"), "The request failed (RuntimeError)")):
+            code, err = self.run_main(failure)
+            self.assertEqual(code, 1)
+            self.assertIn(text, err)
+            self.assertEqual(len(err.strip().splitlines()), 1, err)
 
 
 if __name__ == "__main__":

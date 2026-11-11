@@ -80,6 +80,24 @@
         "include.in.token.scope": "true",
         "display.on.consent.screen": "false"
       }
+    },
+    {
+      "name": "crm.pii",
+      "description": "See customer contact emails and phone numbers unmasked (Milestone 5)",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "false"
+      }
+    },
+    {
+      "name": "audit.read",
+      "description": "Read the gateway audit report (Milestone 5)",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "false"
+      }
     }
   ],
   "defaultDefaultClientScopes": [],
@@ -138,7 +156,7 @@
     {
       "clientId": "cs-lead",
       "name": "Customer service lead agent (read + case write)",
-      "description": "Machine identity for the CS copilot acting for a lead: read scopes plus crm.write; regions claim = * (every region)",
+      "description": "Machine identity for the CS copilot acting for a lead: read scopes plus crm.write and crm.pii (unmasked contacts); regions claim = * (every region)",
       "enabled": true,
       "protocol": "openid-connect",
       "publicClient": false,
@@ -165,7 +183,8 @@
         "erp.read",
         "shipping.read",
         "ar.read",
-        "crm.write"
+        "crm.write",
+        "crm.pii"
       ],
       "optionalClientScopes": [],
       "protocolMappers": [
@@ -262,6 +281,83 @@
           }
         }
       ]
+    },
+    {
+      "clientId": "p01-rate-test",
+      "name": "Test only: rate-limit client",
+      "description": "Test-only identity with crm.read and a very low rate limit (RATE_LIMIT_OVERRIDES), so the limit can be tested without slowing the real agents",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "${P01_RATE_TEST_CLIENT_SECRET}",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "frontchannelLogout": false,
+      "fullScopeAllowed": false,
+      "redirectUris": [],
+      "webOrigins": [],
+      "attributes": {
+        "use.refresh.tokens": "false",
+        "client_credentials.use_refresh_token": "false",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false",
+        "standard.token.exchange.enabled": "false"
+      },
+      "defaultClientScopes": [
+        "gateway-audience",
+        "crm.read"
+      ],
+      "optionalClientScopes": [],
+      "protocolMappers": [
+        {
+          "name": "regions",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-hardcoded-claim-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "regions",
+            "claim.value": "[\"Central\"]",
+            "jsonType.label": "JSON",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "p01-auditor",
+      "name": "Operator: audit report reader",
+      "description": "Operator identity for `make audit`: holds only audit.read, no tool scopes and no regions. No agent holds it.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "${P01_AUDITOR_CLIENT_SECRET}",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "frontchannelLogout": false,
+      "fullScopeAllowed": false,
+      "redirectUris": [],
+      "webOrigins": [],
+      "attributes": {
+        "use.refresh.tokens": "false",
+        "client_credentials.use_refresh_token": "false",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false",
+        "standard.token.exchange.enabled": "false"
+      },
+      "defaultClientScopes": [
+        "gateway-audience",
+        "audit.read"
+      ],
+      "optionalClientScopes": []
     }
   ]
 }

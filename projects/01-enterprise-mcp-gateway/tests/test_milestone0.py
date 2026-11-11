@@ -4,6 +4,7 @@ import os
 import pathlib
 import tempfile
 import unittest
+from unittest import mock
 
 os.environ.setdefault("MEMORY_SQLITE", ":memory:")
 os.environ.setdefault("TRACE_FILE", os.devnull)
@@ -11,12 +12,13 @@ os.environ.setdefault("PROGRESS_DIR", tempfile.mkdtemp())
 
 from agentcore import (FakeLLM, GuardrailViolation, InMemorySink, Percept, Principal, SQLiteMemory, Tool,
                        ToolResult, Tracer, load_cases, run_evals)
+from cs_copilot.agent import guardrails as G
 from cs_copilot.agent import tools as T
 from cs_copilot.agent.build import build_cs_copilot, principal_for_role
 from cs_copilot.agent.guardrails import get_guardrails
 from cs_copilot.agent.knowledge import known_citations
 from cs_copilot.agent.perceive import CaseRequestPerceiver
-from cs_copilot.agent.reason import scripted_llm
+from cs_copilot.agent.reason import scripted_approval, scripted_llm
 from cs_copilot.agent.state import CurrentStateProvider
 from cs_copilot.agent.verify import EvidenceBackedAnswerVerifier
 from mock_systems import build_dataset, get_systems, reset_systems
@@ -273,10 +275,59 @@ class EvalTests(unittest.TestCase):
     def test_all_starter_cases_pass_with_scripted_llm(self):
         def agent_for(case):
             reset_systems()
+            G.set_approver(G.scripted_approver(scripted_approval(case.id)))
             agent, _ = traced(scripted_llm(case.id))
             return agent
+        self.addCleanup(G.set_approver, None)
         report = run_evals(agent_for, load_cases(ROOT / "evals" / "cases.json"))
         self.assertEqual(report.success_rate, 1.0, report.to_markdown())
+
+    def test_writes_run_only_with_an_explicit_human_approval(self):
+        self.addCleanup(G.set_approver, None)
+        case_args = {"account_id": "ACCT-1002", "subject": "Late delivery", "summary": "Customer reports a late delivery."}
+        tool = next(t for t in T.TOOLS if t.name == "create_case")
+        outcomes = {}
+        for decision in (None, "reject", "timeout", "approve"):
+            reset_systems()
+            G.set_approver(G.scripted_approver(decision))
+            try:
+                get_guardrails(5).authorize(LEAD, tool, case_args)
+                outcomes[decision] = "allowed"
+            except GuardrailViolation as v:
+                outcomes[decision] = v.rule
+        self.assertEqual(outcomes, {None: "approval_gate", "reject": "approval_gate", "timeout": "approval_gate",
+                                    "approve": "allowed"})
+        G.set_approver(lambda principal, tool, args: "yes")          # only the boolean True approves
+        with self.assertRaises(GuardrailViolation):
+            get_guardrails(5).authorize(LEAD, tool, case_args)
+        with self.assertRaises(ValueError):
+            G.scripted_approver("maybe")
+
+    def test_copilot_and_gateway_mask_pii_the_same_way(self):
+        """One pattern set: what the gateway masks in results, the copilot masks in answers, progress
+        files and traces. Found drifting by the Milestone 5 architecture review."""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("gateway_pii", ROOT / "gateway" / "ridgeline_gateway" / "pii.py")
+        gateway_pii = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gateway_pii)
+        vectors = ["call 555-0142 today", "(555) 555-0142", "555.555.0142", "+1 555 555 0142", "555-555-0142",
+                   "mail purchasing.summit@example.com.", "SSN 123-45-6789", "PRO 123.4567", "weight 120 1500",
+                   "1Z 999 1234", "SO-104233 on SHP-55012", "INV-90412 $8,370.00", "2026-11-05", "5550142"]
+        for text in vectors:
+            self.assertEqual(G.mask_pii(text), gateway_pii.mask_text(text)[0], text)
+
+    def test_progress_files_and_traces_are_masked_at_rest(self):
+        reset_systems()
+        progress, trace = tempfile.mkdtemp(), os.path.join(tempfile.mkdtemp(), "traces.jsonl")
+        with mock.patch.dict(os.environ, {"PROGRESS_DIR": progress, "TRACE_FILE": trace}):
+            agent = build_cs_copilot(scripted_llm("demo-late-and-billed"))
+        agent.memory = SQLiteMemory()
+        out = agent.run(DEMO_Q, LEAD)
+        self.assertEqual(out.status, "answered")
+        at_rest = (pathlib.Path(progress) / f"{out.trace_id}.json").read_text() + pathlib.Path(trace).read_text()
+        self.assertNotIn("@example.com", at_rest)
+        self.assertIn("[EMAIL REDACTED]", at_rest)
+        self.assertIn("SO-104233", at_rest)                           # record ids stay readable
 
     def test_verifier_rejection_sends_the_model_back_for_evidence(self):
         reset_systems()

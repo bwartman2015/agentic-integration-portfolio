@@ -11,9 +11,10 @@ from __future__ import annotations
 import json
 import pathlib
 import time
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from .memory import ShortTermMemory
+from .observe import redact_strings
 from .rag import Chunk
 from .reason import LLMProvider
 from .skills import Skill
@@ -81,21 +82,26 @@ class LLMCompactor(TruncatingCompactor):
 
 
 class Checkpointer:
-    """Persist: write a progress file per run after every iteration (<dir>/<trace_id>.json)."""
+    """Persist: write a progress file per run after every iteration (<dir>/<trace_id>.json).
+    `redact` (optional) masks every string before it is written, e.g. Guardrails.mask for PII at rest."""
 
-    def __init__(self, directory: str):
+    def __init__(self, directory: str, redact: Callable[[str], str] | None = None):
         self.dir = pathlib.Path(directory)
         self.dir.mkdir(parents=True, exist_ok=True)
+        self.redact = redact
 
     def save(self, *, trace_id: str, agent: str, percept: Percept, iteration: int, status: str,
              history: list[dict[str, str]], results: list[ToolResult]) -> pathlib.Path:
         path = self.dir / f"{trace_id}.json"
-        path.write_text(json.dumps({
+        record = json.loads(json.dumps({
             "trace_id": trace_id, "agent": agent, "updated": time.time(), "status": status,
             "iteration": iteration, "request": percept.content,
             "tool_results": [{"tool": r.tool, "ok": r.ok, "error": r.error} for r in results],
             "history": history,
-        }, indent=2, default=str))
+        }, default=str))
+        if self.redact:
+            record = redact_strings(record, self.redact)
+        path.write_text(json.dumps(record, indent=2))
         return path
 
     def load(self, trace_id: str) -> dict[str, Any]:

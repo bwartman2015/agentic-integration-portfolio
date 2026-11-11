@@ -2,7 +2,7 @@
 human-in-the-loop and budgets.
 
 Policy: Call OPA (OPA_URL) with {principal, tool, args}; deny on error. Pricing, credit-limit and payment-term changes are always denied.
-Approval: create_case goes to an n8n approval webhook (N8N_APPROVAL_URL); deny on timeout.
+Approval: create_case needs a human approval (an n8n workflow, run by the gateway); deny on timeout.
 
 Milestone 4: the policy is the gateway's, `policy/gateway.rego`, served by OPA. The copilot asks the same
 question the gateway asks: {principal, tool, args} plus the region of the record the call would read.
@@ -13,7 +13,8 @@ question the gateway asks: {principal, tool, args} plus the region of the record
     both the Rego (make opa-test) and this copy (tests/test_policy.py), so they cannot drift.
 Until the copilot calls the gateway (Milestone 6) it resolves a record's region from the in-process mock
 systems; after that the gateway does the data check itself. The approval hook denies every write until
-the n8n webhook lands in Milestone 5, so writes fail closed.
+the copilot calls the gateway (Milestone 6), which runs the n8n approval; until then no approver is
+installed, so writes fail closed. Restricted argument names are matched at any depth (Milestone 5).
 """
 from __future__ import annotations
 
@@ -23,7 +24,7 @@ import pathlib
 import re
 import urllib.error
 import urllib.request
-from typing import Any
+from typing import Any, Callable
 
 from agentcore import Guardrails, Principal, Tool
 from mock_systems import get_systems
@@ -40,13 +41,27 @@ NAME = re.compile(_POLICY["name_pattern"].rstrip("$") + r"\Z")
 # agent-core's own tools, which never reach an enterprise system and are not gateway tools.
 LOCAL_TOOLS = frozenset({"load_skill"})
 DECISION_PATH = "/v1/data/ridgeline/gateway/decision"
-REASONS = frozenset({"allowed", "invalid_request", "restricted_change", "unknown_tool", "missing_scope",
-                     "region_unknown", "out_of_region"})
+# One reason-code list for the Rego, the gateway and this module: policy/data.json.
+REASONS: frozenset[str] = frozenset(_POLICY["reasons"])
 _MISSING = object()
 
 
 def _deny(reason: str, **extra: str) -> dict[str, Any]:
     return {"allow": False, "reason": reason, **extra}
+
+
+def _arg_keys(args: dict[str, Any]) -> set[Any]:
+    """Every argument name at any depth (`arg_keys` in the Rego). Iterative, so depth cannot crash it."""
+    keys: set[Any] = set()
+    stack: list[Any] = [args]
+    while stack:
+        value = stack.pop()
+        if isinstance(value, dict):
+            keys.update(value)
+            stack.extend(value.values())
+        elif isinstance(value, list):
+            stack.extend(value)
+    return keys
 
 
 def local_decision(request: dict[str, Any]) -> dict[str, Any]:
@@ -56,12 +71,14 @@ def local_decision(request: dict[str, Any]) -> dict[str, Any]:
     if (not isinstance(principal, dict) or not isinstance(principal.get("client_id"), str)
             or not isinstance(principal.get("scopes"), list) or not isinstance(tool, str)
             or not isinstance(args, dict) or not (resource is _MISSING or isinstance(resource, dict))
-            or not isinstance(principal.get("regions", []), list)
-            or not NAME.fullmatch(tool) or not all(isinstance(k, str) and NAME.fullmatch(k) for k in args)):
+            or not isinstance(principal.get("regions", []), list) or not NAME.fullmatch(tool)):
+        return _deny("invalid_request")
+    arg_keys = _arg_keys(args)
+    if not all(isinstance(k, str) and NAME.fullmatch(k) for k in arg_keys):
         return _deny("invalid_request")
     scopes = {s for s in principal["scopes"] if isinstance(s, str)}
     regions = {r for r in principal.get("regions", []) if isinstance(r, str)}
-    if RESTRICTED.search(tool) or (tool in WRITE_TOOLS and any(RESTRICTED.search(str(k)) for k in args)):
+    if RESTRICTED.search(tool) or (tool in WRITE_TOOLS and any(RESTRICTED.search(k) for k in arg_keys)):
         return _deny("restricted_change")
     if tool not in TOOL_SCOPES:
         return _deny("unknown_tool")
@@ -169,9 +186,51 @@ def policy_hook(principal: Principal, tool: Tool, args: dict[str, Any]) -> tuple
         return False, f"policy error ({type(e).__name__}); denied"
 
 
+# Human approval for writes. The gateway owns the real approval flow (n8n, Milestone 5): once the copilot
+# calls the gateway's tools (Milestone 6), `create_case` is approved there. Until then the copilot's
+# in-process `create_case` runs only if an approver is installed, and none is by default (fail closed).
+# The scripted evals install one to exercise what the agent does after "approved", "rejected" and
+# "timed out".
+Approver = Callable[[Principal, Tool, dict[str, Any]], bool]
+_approver: Approver | None = None
+
+
+def set_approver(approver: Approver | None) -> None:
+    global _approver
+    _approver = approver
+
+
 def approval_hook(principal: Principal, tool: Tool, args: dict[str, Any]) -> bool:
-    """Human approval for writes. Until the n8n webhook (Milestone 5) there is no approver, so deny."""
-    return False
+    """True only when an installed approver says yes. No approver, or any error, denies."""
+    if _approver is None:
+        return False
+    try:
+        return _approver(principal, tool, args) is True
+    except Exception:  # noqa: BLE001  timeout, unreachable approver, anything: fail closed
+        return False
+
+
+def scripted_approver(decision: str | None) -> Approver | None:
+    """The approver a scripted eval installs: "approve", "reject", or "timeout" (the approver never
+    answers, which the hook treats as a denial). None installs nothing."""
+    if decision is None:
+        return None
+    if decision not in ("approve", "reject", "timeout"):
+        raise ValueError(f"unknown scripted approval {decision!r}")
+
+    def approver(principal: Principal, tool: Tool, args: dict[str, Any]) -> bool:
+        if decision == "timeout":
+            raise TimeoutError("no human decision in time")
+        return decision == "approve"
+    return approver
+
+
+def mask_pii(text: str) -> str:
+    """The PII mask used for answers, also applied to progress files and traces at rest (build.py)."""
+    return _MASKER.mask(text)
+
+
+_MASKER = Guardrails()
 
 
 def get_guardrails(max_iterations: int) -> Guardrails:

@@ -140,6 +140,31 @@ failed_cases contains c.name if {
 	print("decision table mismatch:", c.name, "got", got, "want", c.expect)
 }
 
+# One reason-code list (data.gateway_policy.reasons) for the policy, the gateway and the copilot:
+# the policy never returns a code outside it, and the table exercises every code in it.
+test_reason_codes_are_the_shared_list if {
+	every c in data.decision_cases {
+		c.expect.reason in data.gateway_policy.reasons
+	}
+	every reason in data.gateway_policy.reasons {
+		some c in data.decision_cases
+		c.expect.reason == reason
+	}
+	count({r | some r in data.gateway_policy.reasons} & {r | some r in data.gateway_policy.gateway_reasons}) == 0
+}
+
+test_nested_restricted_argument_names_are_denied_on_write_tools if {
+	every args in [
+		{"fields": {"credit_limit": 1}},
+		{"items": [{"note": "x"}, {"extra": {"deep": {"Payment_Terms": "NET60"}}}]},
+		{"a": {"b": {"c": {"d": {"discount": 5}}}}},
+	] {
+		decide(lead, "create_case", args) == {"allow": false, "reason": "restricted_change"}
+	}
+	decide(lead, "create_case", {"fields": {"note": "credit_limit"}}).allow # values are not names
+	decide(lead, "create_case", {"fields": {"bad key": 1}}) == {"allow": false, "reason": "invalid_request"}
+}
+
 test_shared_decision_table if {
 	count(data.decision_cases) >= 30
 	count(failed_cases) == 0
