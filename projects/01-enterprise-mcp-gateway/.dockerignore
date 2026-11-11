@@ -1,4 +1,4 @@
-# Allowlist: only what the gateway and mock-API images need is sent to the Docker build.
+# Allowlist: only what the gateway, mock-API and copilot images need is sent to the Docker build.
 *
 !gateway/requirements.lock
 !gateway/ridgeline_gateway/
@@ -8,5 +8,13 @@
 !mock_apis/tests/
 !mock_systems/
 !policy/
+!copilot/requirements.lock
+!copilot/fetch_model.py
+!copilot/tests/
+!cs_copilot/
+!knowledge/
+!skills/
+!fixtures/llm/
+!evals/cases.json
 **/__pycache__
 **/*.pyc

@@ -11,10 +11,17 @@ question the gateway asks: {principal, tool, args} plus the region of the record
   - OPA_URL unset (the offline demo, tests and scripted evals): `local_decision`, a deterministic copy of
     the same rules that reads the same `policy/data.json`. `policy/decision_cases.json` is run against
     both the Rego (make opa-test) and this copy (tests/test_policy.py), so they cannot drift.
-Until the copilot calls the gateway (Milestone 6) it resolves a record's region from the in-process mock
-systems; after that the gateway does the data check itself. The approval hook denies every write until
-the copilot calls the gateway (Milestone 6), which runs the n8n approval; until then no approver is
-installed, so writes fail closed. Restricted argument names are matched at any depth (Milestone 5).
+Restricted argument names are matched at any depth (Milestone 5).
+
+Two backends (Milestone 6):
+  - Gateway (`get_guardrails(gateway=True)`, chosen by build.py with the tools). Tools are the gateway's MCP tools. The copilot still
+    checks scope and restricted changes before a call (defense in depth, and no wasted gateway calls), but
+    the region rule is the gateway's: only it knows each record's account. `create_case` is approved by a
+    human in the gateway's n8n workflow, so this hook lets it through to that approval; any other write is
+    refused here.
+  - In-process (offline demo, tests, scripted evals): the copilot resolves a record's region from the
+    mock systems itself, and a write runs only if an approver is installed. None is by default, so writes
+    fail closed; the scripted evals install one.
 """
 from __future__ import annotations
 
@@ -24,6 +31,7 @@ import pathlib
 import re
 import urllib.error
 import urllib.request
+from functools import partial
 from typing import Any, Callable
 
 from agentcore import Guardrails, Principal, Tool
@@ -40,6 +48,8 @@ RESTRICTED = re.compile(_POLICY["restricted_pattern"])
 NAME = re.compile(_POLICY["name_pattern"].rstrip("$") + r"\Z")
 # agent-core's own tools, which never reach an enterprise system and are not gateway tools.
 LOCAL_TOOLS = frozenset({"load_skill"})
+# Writes whose human approval the gateway runs itself (n8n). Any other write is refused by the copilot.
+GATEWAY_APPROVED_WRITES = frozenset({"create_case"})
 DECISION_PATH = "/v1/data/ridgeline/gateway/decision"
 # One reason-code list for the Rego, the gateway and this module: policy/data.json.
 REASONS: frozenset[str] = frozenset(_POLICY["reasons"])
@@ -165,16 +175,18 @@ def _explain(decision: dict[str, Any], principal: Principal, tool_name: str) -> 
     return f"the policy service could not authorize {tool_name} ({reason}); denied"
 
 
-def policy_hook(principal: Principal, tool: Tool, args: dict[str, Any]) -> tuple[bool, str]:
-    """Policy decision for one tool call. Fails closed: any error denies."""
+def policy_hook(principal: Principal, tool: Tool, args: dict[str, Any], gateway: bool = False) -> tuple[bool, str]:
+    """Policy decision for one tool call. Fails closed: any error denies. `gateway`: the region rule is
+    left to the gateway, which knows each record's account."""
     try:
         if tool.name in LOCAL_TOOLS:
             return True, "local tool"
         request = {"principal": principal_input(principal), "tool": tool.name, "args": dict(args)}
         decision = decide(request)
-        if decision["allow"]:
-            # Data rule. A search that would return any account outside the caller's regions is denied
-            # whole (the gateway filters instead; the copilot gets that with its MCP tools in Milestone 6).
+        if decision["allow"] and not gateway:
+            # Data rule, in-process backend only (the gateway applies it itself, per record). A search
+            # that would return any account outside the caller's regions is denied whole; the gateway
+            # filters the matches instead.
             for region in resource_regions(tool.name, args) or []:
                 decision = decide({**request, "resource": {"region": region}})
                 if not decision["allow"]:
@@ -186,11 +198,11 @@ def policy_hook(principal: Principal, tool: Tool, args: dict[str, Any]) -> tuple
         return False, f"policy error ({type(e).__name__}); denied"
 
 
-# Human approval for writes. The gateway owns the real approval flow (n8n, Milestone 5): once the copilot
-# calls the gateway's tools (Milestone 6), `create_case` is approved there. Until then the copilot's
-# in-process `create_case` runs only if an approver is installed, and none is by default (fail closed).
-# The scripted evals install one to exercise what the agent does after "approved", "rejected" and
-# "timed out".
+# Human approval for writes. The gateway owns the real approval flow (n8n, Milestone 5): with the gateway
+# backend, `create_case` goes to it and waits there for a person (and is refused on rejection or timeout).
+# The in-process `create_case` runs only if an approver is installed, and none is by default (fail
+# closed). The scripted evals install one to exercise what the agent does after "approved", "rejected"
+# and "timed out".
 Approver = Callable[[Principal, Tool, dict[str, Any]], bool]
 _approver: Approver | None = None
 
@@ -200,8 +212,11 @@ def set_approver(approver: Approver | None) -> None:
     _approver = approver
 
 
-def approval_hook(principal: Principal, tool: Tool, args: dict[str, Any]) -> bool:
-    """True only when an installed approver says yes. No approver, or any error, denies."""
+def approval_hook(principal: Principal, tool: Tool, args: dict[str, Any], gateway: bool = False) -> bool:
+    """Gateway backend: pass `create_case` on to the gateway's human approval, refuse other writes.
+    In-process: true only when an installed approver says yes. No approver, or any error, denies."""
+    if gateway:
+        return tool.name in GATEWAY_APPROVED_WRITES and tool.category == "mcp"
     if _approver is None:
         return False
     try:
@@ -233,6 +248,7 @@ def mask_pii(text: str) -> str:
 _MASKER = Guardrails()
 
 
-def get_guardrails(max_iterations: int) -> Guardrails:
+def get_guardrails(max_iterations: int, gateway: bool = False) -> Guardrails:
     return Guardrails(max_iterations=max_iterations, max_tool_calls=15, max_cost_usd=0.50,
-                      max_input_chars=4000, rate_limit_per_minute=60, policy=policy_hook, approval=approval_hook)
+                      max_input_chars=4000, rate_limit_per_minute=60,
+                      policy=partial(policy_hook, gateway=gateway), approval=partial(approval_hook, gateway=gateway))

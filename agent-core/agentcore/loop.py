@@ -19,7 +19,7 @@ from .act import Executor, ToolRegistry
 from .guardrails import Guardrails, GuardrailViolation
 from .harness import Checkpointer, Compactor, TruncatingCompactor, build_context
 from .memory import LongTermMemory, MemoryItem, SQLiteMemory, ShortTermMemory
-from .observe import Tracer
+from .observe import Tracer, _current_trace
 from .perceive import Perceiver, TextPerceiver
 from .plan import Planner
 from .rag import Retriever
@@ -64,6 +64,9 @@ class Agent:
     # with the same key, so memory cannot carry one caller's data into another caller's prompt.
     # None = one shared memory (every caller sees the same data).
     memory_audience: Callable[[Principal], str] | None = None
+    # Called after an answered run (memory written): (percept, outcome, tool results). For project
+    # learning such as account aliases. A failing hook is traced and never loses the answer.
+    on_answer: Callable[[Percept, Outcome, list[ToolResult]], None] | None = None
 
     def __post_init__(self) -> None:
         if self.skills and self.skills.skills and self.tools.get("load_skill") is None:
@@ -72,6 +75,13 @@ class Agent:
     def run(self, raw: Any, principal: Principal) -> Outcome:
         cost_start = self.tracer.cost_usd
         percept = self.perceiver.perceive(raw, principal)
+        token = _current_trace.set(percept.trace_id)
+        try:
+            return self._run(percept, principal, cost_start)
+        finally:
+            _current_trace.reset(token)
+
+    def _run(self, percept: Percept, principal: Principal, cost_start: float) -> Outcome:
         trace = percept.trace_id
         with self.tracer.span(trace, "agent.run", agent=self.name, principal=principal.id):
             with self.tracer.span(trace, "perceive.parse", kind=percept.kind, source=percept.source):
@@ -152,10 +162,17 @@ class Agent:
                                 meta={"tools": [r.tool for r in results if r.ok], "trace_id": trace,
                                       **({"audience": self.memory_audience(principal)}
                                          if self.memory_audience else {})}))
-                        return finish(Outcome("answered", safe, iterations, tool_calls,
-                                              self.tracer.cost_usd - cost_start, trace,
-                                              answered_directly=(iterations == 1 and tool_calls == 0),
-                                              history=stm.messages))
+                        answered = finish(Outcome("answered", safe, iterations, tool_calls,
+                                                  self.tracer.cost_usd - cost_start, trace,
+                                                  answered_directly=(iterations == 1 and tool_calls == 0),
+                                                  history=stm.messages))
+                        if self.on_answer:
+                            with self.tracer.span(trace, "harness.on_answer") as s_:
+                                try:
+                                    self.on_answer(percept, answered, list(results))
+                                except Exception as e:  # noqa: BLE001  learning must not lose the answer
+                                    s_.status = f"error: {type(e).__name__}"
+                        return answered
                     stm.add("user", f"Goal not achieved yet: {why}. Continue.")
                     self._checkpoint(trace, percept, iterations, "working", stm, results)
                     continue
@@ -215,6 +232,8 @@ class Agent:
         if self.memory_audience is None:
             return self.memory.recall(percept.content, k)
         audience = self.memory_audience(percept.principal)
+        if getattr(self.memory, "filters_audience", False):
+            return self.memory.recall(percept.content, k, audience=audience)   # filtered in the store
         want = k * 8
         while True:
             found = self.memory.recall(percept.content, want)

@@ -3,7 +3,8 @@
 CaseRequestPerceiver accepts a rep's free-text question or an inbound case payload
 ({"subject", "description", "account"?}), validates and normalizes it, and extracts entities.
 It makes no system calls: account aliases come from a static table of Ridgeline's synthetic
-customers (Milestone 6 adds aliases learned in long-term memory). Oversized input is not
+customers; aliases learned from searches (Milestone 6, build.learn_aliases) reach the reasoner
+through long-term memory recall instead, so this stays free of I/O. Oversized input is not
 truncated here; the input guardrail rejects it so the rejection is explicit and traced.
 """
 from __future__ import annotations
@@ -22,7 +23,7 @@ ID_PATTERNS: dict[str, re.Pattern[str]] = {
 
 # canonical account name -> lower-case surface forms that refer to it (synthetic customers only).
 # Static on purpose: the perceiver makes no system calls. Generated background accounts are not listed,
-# so the reasoner finds them with search_accounts. TODO(Milestone 6): add aliases learned in memory.
+# so the reasoner finds them with search_accounts (and recall then offers the learned alias).
 ACCOUNT_ALIASES: dict[str, tuple[str, ...]] = {
     "Big Box Outdoor": ("big box outdoor", "bbo"),
     "Summit Contractors LLC": ("summit contractors llc", "summit contractors"),

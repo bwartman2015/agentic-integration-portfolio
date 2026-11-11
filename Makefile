@@ -12,8 +12,11 @@
 # make token P=01 [CLIENT=cs-rep|cs-lead]  print a short-lived Keycloak access token (for MCP Inspector)
 # make audit P=01 [ARGS=--limit=20]  the gateway audit report: every call, allowed or denied, with its reason
 # make approvals P=01  write requests waiting for a human decision, with their approval links
-# make audit-init P=01  one time, for a hosted audit database (Neon): create the schema from audit/schema.sql
-# make audit-role P=01  hosted audit database: create/rotate the least-privilege gateway_audit role, update .env
+# make db-init P=01    one time, for a hosted database (Neon): apply db/audit.sql and db/memory.sql
+# make db-roles P=01   hosted database: create/rotate the gateway_audit and copilot_memory roles, update .env
+# make models P=01     download the embedding model (checksum-verified) into a Docker volume
+# make ask P=01 Q="..." [ROLE=cs-lead]  ask the CS copilot (container): gateway tools, pgvector memory
+# make copilot-test P=01  build the copilot image's test stage and run its tests (real MCP SDK, no network)
 # make request-case P=01  as cs-lead, request a CRM case and wait for the human decision in n8n
 # make seed-salesforce P=01 [ARGS=--apply]  write synthetic Ridgeline accounts to the Salesforce dev org
 # make down P=01       stop a project's Docker Compose services
@@ -21,7 +24,7 @@ PY ?= python3
 P ?=
 PROJECTS := $(if $(P),$(wildcard projects/$(P)*/),$(wildcard projects/*/))
 
-.PHONY: test core-test project-tests arch-check eval check demo up down gateway-test opa-test live-check seed-salesforce token audit approvals request-case audit-init audit-role
+.PHONY: test core-test project-tests arch-check eval check demo up down gateway-test copilot-test opa-test live-check seed-salesforce token audit approvals request-case db-init db-roles models ask
 
 test: core-test project-tests
 
@@ -78,7 +81,7 @@ COMPOSE_DUMMY_SECRETS = CARRIER_API_KEY=unused AR_API_TOKEN=unused KC_ADMIN_PASS
 	CS_REP_CLIENT_SECRET=unused CS_LEAD_CLIENT_SECRET=unused P01_EXPIRY_TEST_CLIENT_SECRET=unused \
 	P01_CRM_ONLY_TEST_CLIENT_SECRET=unused P01_RATE_TEST_CLIENT_SECRET=unused AUDIT_DB_ADMIN_PASSWORD=unused \
 	AUDIT_DB_PASSWORD=unused N8N_ENCRYPTION_KEY=unused APPROVAL_OPERATOR_TOKEN=unused \
-	APPROVAL_WEBHOOK_SECRET=unused P01_AUDITOR_CLIENT_SECRET=unused
+	APPROVAL_WEBHOOK_SECRET=unused P01_AUDITOR_CLIENT_SECRET=unused COPILOT_MEMORY_DB_PASSWORD=unused
 
 # Each rebuild leaves the previous image untagged; delete those (only this repo's, by label) so local
 # image storage stays flat on a laptop's Docker Desktop.
@@ -86,11 +89,11 @@ PRUNE_OLD_BUILDS = docker image prune -f --filter label=org.ridgeline.project=ri
 
 up:
 	$(call for_compose_projects,$(ENSURE_ENV); status=0; \
-		docker compose -f $$d/docker-compose.yml up -d --build --wait || status=$$?; \
+		docker compose -f $$d/docker-compose.yml up -d --build --wait --remove-orphans || status=$$?; \
 		$(PRUNE_OLD_BUILDS); [ $$status -eq 0 ] || exit $$status)
 
 down:
-	$(call for_compose_projects,$(COMPOSE_DUMMY_SECRETS) docker compose -f $$d/docker-compose.yml --profile ops down)
+	$(call for_compose_projects,$(COMPOSE_DUMMY_SECRETS) docker compose -f $$d/docker-compose.yml --profile ops --profile copilot down)
 
 gateway-test:
 	$(call for_compose_projects,for c in gateway mock_apis; do \
@@ -98,6 +101,14 @@ gateway-test:
 		docker build -q --target test -f $$d/$$c/Dockerfile -t ridgeline/$$c:test $$d >/dev/null && \
 		docker run --rm --network none --read-only --tmpfs /tmp --cap-drop ALL ridgeline/$$c:test || exit 1; \
 	done; $(PRUNE_OLD_BUILDS))
+
+# The copilot image's test stage (needs agent-core as a named build context), with no network.
+copilot-test:
+	$(call for_compose_projects,[ -f $$d/copilot/Dockerfile ] || { echo "no copilot/Dockerfile in $$d"; continue; }; \
+		docker build -q --target test --build-context agentcore=agent-core -f $$d/copilot/Dockerfile \
+			-t ridgeline/cs-copilot:test $$d >/dev/null && \
+		docker run --rm --network none --read-only --tmpfs /tmp --cap-drop ALL ridgeline/cs-copilot:test; \
+		status=$$?; $(PRUNE_OLD_BUILDS); exit $$status)
 
 # Rego unit tests (`opa test`) and a format check (`opa fmt`), in the OPA image the project's Compose file pins.
 opa-test:
@@ -123,14 +134,37 @@ audit:
 approvals:
 	$(call for_compose_projects,docker compose -f $$d/docker-compose.yml --profile ops run --rm --no-deps -T ops python -m ridgeline_gateway.admin.approvals)
 
-# One time, for a hosted audit database (Neon): apply audit/schema.sql with DATABASE_ADMIN_URL (else DATABASE_URL).
-audit-init:
-	$(call for_compose_projects,docker compose -f $$d/docker-compose.yml --profile admin run --rm --no-deps -T audit-init)
+# One time, for a hosted database (Neon): apply db/audit.sql and db/memory.sql with DATABASE_ADMIN_URL
+# (else DATABASE_URL_UNPOOLED, else DATABASE_URL).
+db-init:
+	$(call for_compose_projects,docker compose -f $$d/docker-compose.yml --profile admin run --rm --no-deps -T db-init)
 
-# For a hosted audit database: create or rotate the least-privilege gateway_audit role and point
-# DATABASE_URL in .env at it (no password is printed). Needs DATABASE_ADMIN_URL or DATABASE_URL_UNPOOLED.
-audit-role:
-	$(call for_compose_projects,$(PY) $$d/audit/create_role.py)
+# For a hosted database: create or rotate the least-privilege gateway_audit and copilot_memory roles and
+# point DATABASE_URL and MEMORY_DATABASE_URL in .env at them (no password is printed). Needs
+# DATABASE_ADMIN_URL or DATABASE_URL_UNPOOLED.
+db-roles:
+	$(call for_compose_projects,$(PY) $$d/db/roles.py)
+
+# Download the embedding model (nomic-embed-text-v1.5, SHA-256 verified) into the `models` volume.
+# Builds the copilot image if needed; a present, matching file is not downloaded again.
+models:
+	$(call for_compose_projects,$(ENSURE_ENV); \
+		docker compose -f $$d/docker-compose.yml --progress quiet --profile copilot build copilot && \
+		docker compose -f $$d/docker-compose.yml --profile admin run --rm --no-deps -T models; \
+		status=$$?; $(PRUNE_OLD_BUILDS); exit $$status)
+
+# Ask the CS copilot one question (needs `make up P=01` running and `make models P=01` once).
+# Q="--list" shows the questions the scripted model knows (until Milestone 7). ROLE=cs-rep | cs-lead.
+# The question and role reach the container through the environment (ASK_Q, ASK_ROLE), never through
+# shell parsing.
+ask: export ASK_Q = $(Q)
+ask: export ASK_ROLE = $(ROLE)
+ask:
+	@test -n "$$ASK_Q" || { echo 'usage: make ask P=01 Q="your question" [ROLE=cs-lead]   (Q=--list for examples)'; exit 1; }
+	$(call for_compose_projects,docker compose -f $$d/docker-compose.yml --progress quiet --profile copilot build copilot && \
+		docker compose -f $$d/docker-compose.yml --profile copilot run --rm -T copilot \
+			--role "$${ASK_ROLE:-cs-rep}" $(if $(filter-out --list,$(Q)),"$$ASK_Q",--list); \
+		status=$$?; $(PRUNE_OLD_BUILDS); exit $$status)
 
 # As cs-lead, ask the gateway to create a case and wait for a human to approve or reject it in n8n.
 request-case:

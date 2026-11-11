@@ -1,6 +1,7 @@
 -- Audit schema for the Ridgeline MCP gateway (Milestone 5). Idempotent: safe to run again.
--- Local Postgres: audit/init.sh runs it when the data volume is first created.
--- Neon (or any hosted Postgres): `make audit-init P=01` runs it with DATABASE_ADMIN_URL.
+-- Local Postgres: db/init.sh runs it when the data volume is first created.
+-- Neon (or any hosted Postgres): `make db-init P=01` runs it with DATABASE_ADMIN_URL (and `make db-roles
+-- P=01` again, after creating the roles, so their grants apply).
 --
 -- Append-only, twice over:
 --   1. Triggers refuse UPDATE, DELETE and TRUNCATE on audit_log, and allow on approvals only the one

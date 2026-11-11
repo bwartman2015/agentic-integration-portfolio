@@ -20,7 +20,7 @@ from .act import Executor, Tool, ToolRegistry
 from .guardrails import Guardrails, GuardrailViolation
 from .loop import AcceptNonEmpty, Agent, GoalVerifier
 from .memory import LongTermMemory, MemoryItem, ShortTermMemory, SQLiteMemory
-from .observe import InMemorySink, JSONLSink, Span, Tracer
+from .observe import InMemorySink, JSONLSink, Span, Tracer, current_trace_id
 from .perceive import Perceiver, TextPerceiver
 from .plan import LLMPlanner, Planner
 from .reason import AnthropicLLM, FakeLLM, LLMProvider, LLMResponse, OllamaLLM, Reasoner

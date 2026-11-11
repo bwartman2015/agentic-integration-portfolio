@@ -1,6 +1,6 @@
 """Audit (Milestone 5): one durable row per tool call, allowed or denied, with the reason.
 
-The sink is Postgres (`audit/init.sh` creates the schema). The gateway's database role may INSERT and
+The sink is Postgres (db/audit.sql; db/init.sh applies it locally). The gateway's database role may INSERT and
 SELECT on `audit_log` but not UPDATE or DELETE, so the gateway cannot rewrite its own history. Approval
 requests have their own table: a row is written before a human is asked, and the write tool runs only
 after that row exists, so no approved write can happen without a durable record.
@@ -8,7 +8,7 @@ after that row exists, so no approved write can happen without a durable record.
 Fail closed: if a read cannot be audited, its result is not returned (`audit_unavailable`). Argument
 values are stored masked (pii.audit_args); results are never stored.
 
-Where the store is: the local `audit-db` container by default (AUDIT_DB_HOST and friends). Setting
+Where the store is: the local `db` container by default (AUDIT_DB_HOST and friends). Setting
 DATABASE_URL (for example a Neon connection string) uses that database instead. A non-local host must
 use TLS (`sslmode=require`, `verify-ca` or `verify-full`), or the gateway refuses to start. The URL is a
 secret: it is never logged, printed or shown in an error.
@@ -29,7 +29,7 @@ MAX_REPORT_ROWS = 200
 _HOST = re.compile(r"^[A-Za-z0-9.-]{1,253}$")
 _IDENT = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
 # Hosts that never leave this machine or the Compose network: TLS is optional only for these.
-LOCAL_HOSTS = frozenset({"audit-db", "localhost", "127.0.0.1", "::1", "host.docker.internal"})
+LOCAL_HOSTS = frozenset({"db", "localhost", "127.0.0.1", "::1", "host.docker.internal"})
 TLS_MODES = frozenset({"require", "verify-ca", "verify-full"})
 # libpq options asyncpg does not implement; it would send them to the server as settings, which fails.
 # channel_binding is one (Neon's console adds it); the connection is still TLS with SCRAM authentication.
@@ -107,10 +107,10 @@ class AuditConfig:
                 raise AuditConfigError("invalid audit configuration (the gateway never runs without an audit "
                                        "store): " + "; ".join(url_errors + timeout_error))
             return AuditConfig(host, "", "", "", 0, timeout, dsn)
-        host, database, user = get("AUDIT_DB_HOST"), get("AUDIT_DB_NAME", "audit"), get("AUDIT_DB_USER", "gateway_audit")
+        host, database, user = get("AUDIT_DB_HOST"), get("AUDIT_DB_NAME", "ridgeline"), get("AUDIT_DB_USER", "gateway_audit")
         password = env.get("AUDIT_DB_PASSWORD") or ""
         if not _HOST.match(host):
-            errors.append("AUDIT_DB_HOST must be a host name such as audit-db")
+            errors.append("AUDIT_DB_HOST must be a host name such as db")
         for name, value in (("AUDIT_DB_NAME", database), ("AUDIT_DB_USER", user)):
             if not _IDENT.match(value):
                 errors.append(f"{name} must be a plain lower-case identifier")

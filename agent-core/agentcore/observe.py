@@ -5,6 +5,7 @@ milestones an OpenTelemetry exporter and a Langfuse exporter behind the same Sin
 """
 from __future__ import annotations
 
+import contextvars
 import json
 import time
 import uuid
@@ -65,6 +66,15 @@ class JSONLSink:
             record = redact_strings(record, self.redact)
         with open(self.path, "a") as f:
             f.write(json.dumps(record) + "\n")
+
+
+# The trace id of the agent run in progress (None outside a run). Tools read it to tag downstream calls,
+# for example as an x-request-id header, so another system's logs join to this run's trace.
+_current_trace: contextvars.ContextVar[str | None] = contextvars.ContextVar("agentcore_trace_id", default=None)
+
+
+def current_trace_id() -> str | None:
+    return _current_trace.get()
 
 
 LAYERS = {"perceive", "think", "remember", "plan", "act", "guardrails", "observe", "harness", "agent"}

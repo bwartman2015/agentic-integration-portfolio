@@ -267,6 +267,38 @@ class PrincipalAttributeTests(unittest.TestCase):
         self.assertEqual(rep.success_rate, 1.0, rep.to_markdown())
 
 
+class RunContextTests(unittest.TestCase):
+    """Tools can learn which agent run called them (for downstream audit logs), and a project can act on
+    an answered run (for example, learn aliases from tool results)."""
+
+    def test_tools_see_the_trace_id_of_the_run_and_nothing_outside_it(self):
+        from agentcore import current_trace_id
+        seen = []
+        tools = ToolRegistry()
+        tools.register(Tool("whoami", "record the trace id", handler=lambda: seen.append(current_trace_id()) or {"ok": 1},
+                            scope="ar.read"))
+        llm = FakeLLM([{"type": "tool", "tool": "whoami", "args": {}}, {"type": "answer", "answer": "done"}])
+        out = Agent(name="t", reasoner=Reasoner(llm), tools=tools).run("go", FIN)
+        self.assertEqual(seen, [out.trace_id])
+        self.assertIsNone(current_trace_id())
+
+    def test_on_answer_sees_the_percept_outcome_and_tool_results(self):
+        got = []
+        llm = FakeLLM([{"type": "tool", "tool": "get_invoice", "args": {"invoice_id": "INV-3"}},
+                       {"type": "answer", "answer": "INV-3 has 1200 open"}])
+        out = Agent(name="t", reasoner=Reasoner(llm), tools=invoice_tools(),
+                    on_answer=lambda p, o, r: got.append((p.content, o.status, [x.tool for x in r]))).run("INV-3?", FIN)
+        self.assertEqual(got, [("INV-3?", "answered", ["get_invoice"])])
+        self.assertEqual(out.status, "answered")
+
+    def test_a_failing_on_answer_hook_does_not_lose_the_answer(self):
+        def boom(*_a):
+            raise RuntimeError("hook failed")
+        llm = FakeLLM([{"type": "answer", "answer": "fine"}])
+        out = Agent(name="t", reasoner=Reasoner(llm), tools=invoice_tools(), on_answer=boom).run("q?", FIN)
+        self.assertEqual((out.status, out.answer), ("answered", "fine"))
+
+
 class MemoryAudienceTests(unittest.TestCase):
     """Long-term memory must not carry one caller's answers into another caller's prompt."""
 
@@ -316,6 +348,42 @@ class MemoryAudienceTests(unittest.TestCase):
         Agent(name="t", reasoner=Reasoner(llm), tools=invoice_tools(), memory=memory,
               memory_audience=lambda p: p.id).run("open amount on invoice INV-3?", FIN)
         self.assertEqual(ctx_of(llm)["long_term_memory"], ["Q: open amount on invoice INV-3?\nA: mine"])
+
+    def test_a_store_that_filters_by_audience_gets_the_audience_in_the_query(self):
+        """Stores like pgvector filter in SQL instead of the loop over-fetching and discarding."""
+        from agentcore import MemoryItem
+
+        class FilteringStore:
+            filters_audience = True
+
+            def __init__(self):
+                self.calls, self.items = [], []
+
+            def recall(self, query, k=3, audience=None):
+                self.calls.append((query, k, audience))
+                return [i for i in self.items if i.meta.get("audience") == audience][:k]
+
+            def remember(self, item):
+                self.items.append(item)
+
+        store = FilteringStore()
+        store.items.append(MemoryItem("Q: x\nA: theirs", meta={"audience": "other"}))
+        store.items.append(MemoryItem("Q: x\nA: mine", meta={"audience": FIN.id}))
+        llm = FakeLLM([{"type": "answer", "answer": "ok"}])
+        Agent(name="t", reasoner=Reasoner(llm), tools=invoice_tools(), memory=store,
+              memory_audience=lambda p: p.id).run("open amount on invoice INV-3?", FIN)
+        self.assertEqual(store.calls, [("open amount on invoice INV-3?", 3, FIN.id)])
+        self.assertEqual(ctx_of(llm)["long_term_memory"], ["Q: x\nA: mine"])
+
+    def test_sqlite_memory_filters_by_audience_itself(self):
+        from agentcore import MemoryItem, SQLiteMemory
+        memory = SQLiteMemory()
+        self.assertTrue(memory.filters_audience)
+        memory.remember(MemoryItem("Q: invoice INV-3\nA: theirs", meta={"audience": "other"}))
+        memory.remember(MemoryItem("Q: invoice INV-3\nA: mine", meta={"audience": "me"}))
+        memory.remember(MemoryItem("Q: invoice INV-3\nA: untagged"))
+        self.assertEqual([m.text for m in memory.recall("invoice INV-3", 5, audience="me")], ["Q: invoice INV-3\nA: mine"])
+        self.assertEqual(len(memory.recall("invoice INV-3", 5)), 3)
 
     def test_without_an_audience_function_memory_is_shared_as_before(self):
         from agentcore import SQLiteMemory

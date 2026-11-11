@@ -4,8 +4,9 @@ Run 1  A rep asks the main demo question; the copilot plans, calls four tools, v
        against the evidence, cites policy, masks the contact email, writes memory, a progress file
        and a JSONL trace. The trace is read back and printed span by span, grouped by layer.
 Run 2  A cs-rep (no crm.write) asks to open a case: denied by the permission guardrail.
-Run 3  A cs-lead (crm.write) asks the same: denied by the approval gate. The copilot's own approval hook
-       refuses every write until it calls the gateway, which runs the human approval (Milestone 6).
+Run 3  A cs-lead (crm.write) asks the same: denied by the approval gate. Offline there is no approver,
+       so writes fail closed; in the copilot container (`make ask`) create_case goes to the gateway, which
+       asks a human in n8n.
 Usage: make demo P=01   (from the repo root)
 """
 from __future__ import annotations
@@ -72,7 +73,7 @@ def main() -> None:
         out = build_cs_copilot(get_llm(script=script)).run(CASE_REQUEST, principal_for_role(role))
         print("guardrail:", _short(denial_line(out.history), 120))
         print(f"status={out.status}  answer: {out.answer}")
-    print(f"\nCRM cases created: {len(get_systems().crm.cases)} (no approver in the offline demo: writes fail closed)")
+    print(f"\nCRM cases created: {len(get_systems().crm.cases)} (offline demo, no approver: writes fail closed; `make ask` uses the gateway's human approval)")
 
 
 if __name__ == "__main__":

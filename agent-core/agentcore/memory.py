@@ -40,6 +40,9 @@ class MemoryItem:
 
 
 class LongTermMemory(Protocol):
+    """A store may set `filters_audience = True` and accept `recall(query, k, audience=...)`: it then
+    returns only items whose meta["audience"] equals `audience` (filtered in the store, e.g. in SQL).
+    Stores without it are filtered by the agent loop."""
     def recall(self, query: str, k: int = 3) -> list[MemoryItem]: ...
     def remember(self, item: MemoryItem) -> None: ...
 
@@ -49,6 +52,8 @@ def _tokens(s: str) -> set[str]:
 
 
 class SQLiteMemory:
+    filters_audience = True
+
     def __init__(self, path: str = ":memory:"):
         # check_same_thread=False + a lock: A2A servers run agents on worker threads
         self.db = sqlite3.connect(path, check_same_thread=False)
@@ -61,11 +66,15 @@ class SQLiteMemory:
                             (item.kind, item.text, json.dumps(item.meta), time.time()))
             self.db.commit()
 
-    def recall(self, query: str, k: int = 3) -> list[MemoryItem]:
+    def recall(self, query: str, k: int = 3, audience: str | None = None) -> list[MemoryItem]:
         q = _tokens(query)
         scored = []
         with self._lock:
-            rows = self.db.execute("select kind, text, meta from memory").fetchall()
+            if audience is None:
+                rows = self.db.execute("select kind, text, meta from memory").fetchall()
+            else:
+                rows = self.db.execute("select kind, text, meta from memory where json_extract(meta, '$.audience') = ?",
+                                       (audience,)).fetchall()
         for kind, text, meta in rows:
             overlap = len(q & _tokens(text)) / (len(q) or 1)
             if overlap > 0:

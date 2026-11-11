@@ -1,0 +1,44 @@
+{
+  "description": "make ask: a CS lead asks for a late-delivery case. The gateway runs the human approval in n8n; the answer follows the real decision (created with the CRM's case id, or not created).",
+  "responses": [
+    {
+      "type": "tool",
+      "tool": "search_accounts",
+      "args": {
+        "query": "Summit Contractors"
+      },
+      "reasoning": "Resolve the account first."
+    },
+    {
+      "type": "tool",
+      "tool": "track_shipment",
+      "args": {
+        "sales_order": "SO-104233"
+      },
+      "reasoning": "Confirm the delivery problem the case is about."
+    },
+    {
+      "type": "tool",
+      "tool": "create_case",
+      "args": {
+        "account_id": "ACCT-1002",
+        "subject": "Late delivery SO-104233",
+        "summary": "Delivery attempted 2026-11-05, consignee dock closed; new ETA 2026-11-10, 3 business days late. Next step: confirm the new delivery window with the customer."
+      },
+      "reasoning": "Propose the case; a human approves or rejects it in the approval workflow."
+    },
+    {
+      "branch_on": "create_case",
+      "ok": {
+        "type": "answer",
+        "reasoning": "A human approved; the CRM assigned the case id.",
+        "answer": "Case {case_id} was created for Summit Contractors LLC (ACCT-1002) about the late delivery of SO-104233, after a human approved it. Shipments more than 2 business days late are escalated to Logistics and the account rep [escalation-matrix.md#0]."
+      },
+      "failed": {
+        "type": "answer",
+        "reasoning": "Rejected, timed out or refused (the result says which): nothing was written.",
+        "answer": "The late-delivery case for Summit Contractors LLC (ACCT-1002) about SO-104233 was not created. Reason: {error}"
+      }
+    }
+  ]
+}

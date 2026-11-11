@@ -2,11 +2,11 @@
 # Regenerate <component>/requirements.lock: exact versions + sha256 hashes for linux amd64 and arm64 wheels.
 # Resolves inside the same digest-pinned base image the component's Dockerfile uses, so the lock
 # matches the runtime.
-# Usage (from the project root): ./lock-deps.sh gateway   |   ./lock-deps.sh mock_apis
+# Usage (from the project root): ./lock-deps.sh gateway | mock_apis | copilot
 set -euo pipefail
 cd "$(dirname "$0")"
 
-COMPONENT=${1:?usage: ./lock-deps.sh <gateway|mock_apis>}
+COMPONENT=${1:?usage: ./lock-deps.sh <gateway|mock_apis|copilot>}
 test -f "$COMPONENT/Dockerfile" && test -f "$COMPONENT/pyproject.toml" || { echo "no Dockerfile/pyproject.toml in $COMPONENT"; exit 1; }
 
 BASE_IMAGE=$(sed -n 's/^FROM \(python:[^ ]*\) AS base$/\1/p' "$COMPONENT/Dockerfile")

@@ -2,7 +2,9 @@
 
 Providers (LLM_PROVIDER): ollama (default, free) | anthropic | scripted | fake.
 `scripted` replays a FakeLLM script from fixtures/llm/<name>.json so the demo, tests and the
-scripted eval baseline run offline and deterministically. Scripted runs test the harness
+scripted eval baseline run offline and deterministically. A script step may branch on the real result
+of an earlier tool call ({"branch_on": tool, "ok": step, "failed": step}): `make ask` runs scripts
+against the live gateway, where a human decides a write, so the answer must follow that decision. Scripted runs test the harness
 (tools, guardrails, verifier, citations), not model quality; that is what the Ollama baseline is for.
 """
 from __future__ import annotations
@@ -10,6 +12,8 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import re
+from typing import Any
 
 from agentcore import AnthropicLLM, FakeLLM, LLMProvider, OllamaLLM, Reasoner
 from agentcore.reason import SYSTEM_PROMPT
@@ -21,10 +25,41 @@ AGENT_PROMPTS = {
 }
 
 
+class ScriptedLLM(FakeLLM):
+    """FakeLLM whose branch steps pick `ok` or `failed` from the latest "Result of <tool>: ..." message,
+    and fill {placeholders} from that result (e.g. the case id the CRM really assigned)."""
+
+    def complete(self, system: str, messages: list[dict[str, str]], max_tokens: int = 1024) -> Any:
+        if self.responses:
+            step = json.loads(self.responses[0])
+            if isinstance(step, dict) and "branch_on" in step:
+                result = _last_result(messages, step["branch_on"])
+                ok = isinstance(result, dict) and "error" not in result
+                chosen = json.dumps(step["ok" if ok else "failed"])
+                values = {k: v for k, v in (result or {}).items() if isinstance(v, (str, int, float))}
+                if isinstance(values.get("error"), str):          # the refusal's own words, without the class name
+                    err = values["error"]
+                    values["error"] = err[err.find("Access denied"):] if "Access denied" in err else err.split(": ", 1)[-1]
+                self.responses[0] = re.sub(r"\{(\w+)\}", lambda m: json.dumps(str(values[m.group(1)]))[1:-1]
+                                           if m.group(1) in values else m.group(0), chosen)
+        return super().complete(system, messages, max_tokens)
+
+
+def _last_result(messages: list[dict[str, str]], tool: str) -> Any:
+    prefix = f"Result of {tool}: "
+    for m in reversed(messages):
+        if m.get("content", "").startswith(prefix):
+            try:
+                return json.loads(m["content"][len(prefix):])
+            except ValueError:
+                return {"error": "unreadable result"}
+    return None
+
+
 def scripted_llm(script: str) -> FakeLLM:
     """Replay fixtures/llm/<script>.json: {"description": ..., "responses": [decision or plan JSON, ...]}."""
     data = json.loads((FIXTURES_DIR / f"{script}.json").read_text())
-    return FakeLLM(data["responses"])
+    return ScriptedLLM(data["responses"])
 
 
 def scripted_approval(script: str) -> str | None:

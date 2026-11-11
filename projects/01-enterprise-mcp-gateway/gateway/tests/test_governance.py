@@ -155,7 +155,7 @@ class AuditTests(_Governed):
     def test_database_url_selects_a_hosted_store_and_requires_tls(self):
         secret = "s" * 24
         neon = f"postgresql://gateway_audit:{secret}@ep-test-endpoint-pooler.us-east-2.db.example/neondb"
-        local = {"AUDIT_DB_HOST": "audit-db", "AUDIT_DB_PASSWORD": "p" * 32}
+        local = {"AUDIT_DB_HOST": "db", "AUDIT_DB_PASSWORD": "p" * 32}
         self.assertEqual(AuditConfig.from_env(local).source, "local")
         self.assertEqual(AuditConfig.from_env({**local, "DATABASE_URL": "  "}).source, "local")
         cfg = AuditConfig.from_env({**local, "DATABASE_URL": neon + "?sslmode=require&channel_binding=require"})
@@ -170,7 +170,7 @@ class AuditTests(_Governed):
         import os
         self.assertTrue(os.path.isfile("/etc/ssl/certs/ca-certificates.crt"), "the image must ship a CA bundle")
         # A database on this machine or the Compose network may skip TLS; anything else may not.
-        self.assertEqual(AuditConfig.from_env({"DATABASE_URL": f"postgresql://u:{secret}@audit-db:5432/audit"}).host, "audit-db")
+        self.assertEqual(AuditConfig.from_env({"DATABASE_URL": f"postgresql://u:{secret}@db:5432/ridgeline"}).host, "db")
         for bad in (neon, neon + "?sslmode=disable", neon + "?sslmode=prefer", "mysql://u:x@db.example/x?sslmode=require",
                     f"postgresql://{secret}@/neondb", "postgresql://u@db.example?sslmode=require", "postgresql://[::1"):
             with self.subTest(url=bad[:30]), self.assertRaises(AuditConfigError) as ctx:
@@ -187,9 +187,9 @@ class AuditTests(_Governed):
         self.assertNotIn(secret, str(ctx.exception))
 
     def test_config_validation(self):
-        good = {"AUDIT_DB_HOST": "audit-db", "AUDIT_DB_PASSWORD": "p" * 32}
+        good = {"AUDIT_DB_HOST": "db", "AUDIT_DB_PASSWORD": "p" * 32}
         cfg = AuditConfig.from_env(good)
-        self.assertEqual((cfg.host, cfg.database, cfg.user, cfg.port), ("audit-db", "audit", "gateway_audit", 5432))
+        self.assertEqual((cfg.host, cfg.database, cfg.user, cfg.port), ("db", "ridgeline", "gateway_audit", 5432))
         self.assertNotIn("p" * 32, repr(cfg))
         for bad in ({}, {**good, "AUDIT_DB_PASSWORD": "short"}, {**good, "AUDIT_DB_HOST": "db/evil"},
                     {**good, "AUDIT_DB_USER": "Robert'); DROP"}, {**good, "AUDIT_DB_PORT": "0"},

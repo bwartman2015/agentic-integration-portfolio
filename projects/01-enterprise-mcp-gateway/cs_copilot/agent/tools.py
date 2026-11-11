@@ -1,8 +1,9 @@
 """ACT: every external action is a registered Tool with a schema, scope and side-effect class.
 
-Milestone 0: handlers are backed by the in-process mock systems (mock_systems/, seeded synthetic data).
-Milestone 6 replaces them with the gateway's MCP tools via agentcore.register_tool_source, keeping the
-same names, scopes and side effects. Errors (unknown ids) are raised and returned to THINK as data.
+These handlers are the in-process backend over the mock systems (mock_systems/, seeded synthetic data),
+used by the offline demo, the tests and the scripted evals. In the copilot container (GATEWAY_URL set)
+build.py registers the gateway's MCP tools instead, through agentcore.register_tool_source, with the same
+names, scopes and side effects. Errors (unknown ids) are raised and returned to THINK as data.
 """
 from __future__ import annotations
 

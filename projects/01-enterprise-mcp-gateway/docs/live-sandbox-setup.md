@@ -120,8 +120,8 @@ The approval forms work without logging in, but n8n's editor (where the workflow
 
 To try an approval end to end: run `make request-case P=01` in one terminal, `make approvals P=01` in another, open the link it prints, choose **Approve**, type your name and submit within `APPROVAL_TIMEOUT_S` (120 s). Don't restart the stack while a request is waiting: the request can no longer be completed (nothing is written, and the next start closes it as `unavailable`).
 
-## 6. Optional: keep the audit log in Neon (Milestone 5)
-By default the audit log lives in the local `audit-db` container, and `make up` and the tests use it. To keep it in [Neon](https://neon.com) (serverless Postgres, free plan) instead, set `DATABASE_URL` in `.env`. The copilot's pgvector memory will use the same URL in Milestone 6.
+## 6. Optional: keep the audit log and the copilot's memory in Neon (Milestones 5-6)
+By default both live in the local `db` container (Postgres 17 with pgvector; since Milestone 6 its volume is `ridgeline-p01_db-data`, so local audit history starts fresh, and the old `ridgeline-p01_audit-data` volume can be deleted with `docker volume rm`), and `make up` and the tests use it: the gateway's audit log in schema `public`, the copilot's long-term memory in schema `memory`. To keep them in [Neon](https://neon.com) (serverless Postgres, free plan) instead, set `DATABASE_URL` in `.env` and run the two commands below; they also set `MEMORY_DATABASE_URL`, which the copilot uses.
 
 `neon.ts`, `package.json`, `package-lock.json` and `.gitignore` in `projects/01-enterprise-mcp-gateway` belong to this optional setup only. They are the Neon CLI's project config and the two packages `neon.ts` needs. The gateway, the tests and the local stack never use them, and you don't need Node.js unless you set up Neon.
 
@@ -136,18 +136,19 @@ By default the audit log lives in the local `audit-db` container, and `make up` 
    neon init -y --no-agent-setup --org-id <org-id> --project-id <project-id> --branch production --services postgres
    ```
    This adds `DATABASE_URL` (pooled) and `DATABASE_URL_UNPOOLED` (direct) to `.env`, both as the database owner `neondb_owner`. Your other values are kept. You can also paste the connection strings from the Neon console (**Connect**) into `.env` yourself. They must contain `sslmode=require`.
-4. Create the audit tables in Neon. This is one time, and safe to repeat:
+4. Create the tables in Neon. This is one time, and safe to repeat:
    ```bash
-   make audit-init P=01    # applies audit/schema.sql as the owner, over the direct URL
+   make db-init P=01    # applies db/audit.sql and db/memory.sql (adds the pgvector extension) as the owner
    ```
-5. Give the gateway its own least-privilege role:
+5. Give the gateway and the copilot their own least-privilege roles:
    ```bash
-   make audit-role P=01
+   make db-roles P=01
    ```
-   This creates (or, run again, rotates) the role `gateway_audit` with a random password, applies its grants, and rewrites `DATABASE_URL` in `.env` to connect as that role. It changes nothing else in `.env` and prints no password. `DATABASE_URL_UNPOOLED` stays the owner's URL, used only by `make audit-init` and `make audit-role`.
-   - **Grants:** the role gets the same rights as the local one: INSERT and SELECT on `audit_log`, and on `approvals` INSERT of the request columns, SELECT, and UPDATE of only `status`, `approver` and `decided_at`. It cannot update or delete audit rows, truncate, drop or alter tables, create tables, or turn off the triggers.
-   - **Why SQL, not the console:** the role is created with SQL on purpose. Neon makes roles created in its console, CLI or API members of `neon_superuser`, which would defeat least privilege.
-6. `make up P=01`. Check that `docker compose logs gateway` shows `"audit": {"store": "postgres", "source": "database_url", "host": "*.neon.tech"}`. `make audit P=01` now reads from Neon.
+   This creates (or, run again, rotates) the roles `gateway_audit` and `copilot_memory` with random passwords, applies their grants, and rewrites `DATABASE_URL` (gateway) and `MEMORY_DATABASE_URL` (copilot) in `.env` to connect as them. It changes nothing else in `.env`, prints no password, and stops if either role has any elevated attribute or membership. `DATABASE_URL_UNPOOLED` stays the owner's URL, used only by `make db-init` and `make db-roles`.
+   - **`gateway_audit`:** the same rights as the local role: INSERT and SELECT on `audit_log`, and on `approvals` INSERT of the request columns, SELECT, and UPDATE of only `status`, `approver` and `decided_at`. It cannot update or delete audit rows, truncate, drop or alter tables, create tables, turn off the triggers, or touch the `memory` schema.
+   - **`copilot_memory`:** INSERT and SELECT on `memory.items`, nothing else: no UPDATE or DELETE of memories, no audit tables, no DDL.
+   - **Why SQL, not the console:** the roles are created with SQL on purpose. Neon makes roles created in its console, CLI or API members of `neon_superuser`, which would defeat least privilege.
+6. `make up P=01`. Check that `docker compose logs gateway` shows `"audit": {"store": "postgres", "source": "database_url", "host": "*.neon.tech"}`. `make audit P=01` now reads from Neon, and `make ask P=01` keeps the copilot's memory there.
 
 **Keep Neon commands away from `DATABASE_URL`.** `neon env pull`, `neon deploy`, `neon link` and `neon checkout` write the owner's `DATABASE_URL` into `.env` by default, which would undo step 5. From now on:
 ```bash
@@ -155,16 +156,16 @@ neon env pull --file .env.neon     # a separate, git-ignored file; copy any valu
 neon deploy --no-env-pull
 neon checkout <branch> --no-env-pull
 ```
-If one of them did overwrite `DATABASE_URL`, run `make audit-role P=01` again.
+If one of them did overwrite `DATABASE_URL`, run `make db-roles P=01` again.
 
 How it behaves:
 - **TLS is enforced.** A remote `DATABASE_URL` without `sslmode=require` (or `verify-full`) stops the gateway at startup. `require` encrypts but does not check the server's certificate; **`sslmode=verify-full` is recommended** (change `require` to `verify-full` in `DATABASE_URL`). The gateway then checks Neon's certificate against the image's CA bundle. The URL is never logged; the startup line shows only the provider domain.
-- **Append-only twice over.** The role's grants allow only adding and reading. Triggers in `audit/schema.sql` also refuse UPDATE, DELETE and TRUNCATE on the audit log for every role, the owner included.
+- **Append-only twice over.** The role's grants allow only adding and reading. Triggers in `db/audit.sql` also refuse UPDATE, DELETE and TRUNCATE on the audit log for every role, the owner included.
 - **Fail closed.** If Neon is unreachable or its compute is waking up past `AUDIT_TIMEOUT_S`, reads are refused (`audit_unavailable`). Retry after a few seconds.
 - **Restarts during an approval.** If the gateway restarts while a write is waiting for a human, that request can't be completed, and nothing is written. The next startup closes it as `unavailable`, and `make request-case` reports it in one line. Request again after the restart.
-- **Switch back:** empty `DATABASE_URL` in `.env`, then `make up P=01`. The local container keeps running either way, so switching needs no other change.
+- **Switch back:** empty `DATABASE_URL` and `MEMORY_DATABASE_URL` in `.env`, then `make up P=01`. The local container keeps running either way, so switching needs no other change. Memories do not move between databases; each starts empty.
 
-**Never commit the URL.** It holds the database password. It lives only in the git-ignored `.env` (and `.env.neon`, if you pull into one), and `make safety` fails if a database URL with a password appears in a tracked file. If it leaks, run `make audit-role P=01` to rotate the gateway's password, and reset the owner's password in the Neon console.
+**Never commit the URL.** It holds the database password. It lives only in the git-ignored `.env` (and `.env.neon`, if you pull into one), and `make safety` fails if a database URL with a password appears in a tracked file. If it leaks, run `make db-roles P=01` to rotate both roles' passwords, and reset the owner's password in the Neon console.
 
 ## Troubleshooting
 | Symptom | Cause / fix |
@@ -180,5 +181,8 @@ How it behaves:
 | Alias search returns nothing | SOSL indexing lag. Retry after a few minutes, or search by name. |
 | Inspector or curl gets **401** from the gateway | No token, or it expired (5 minutes). Run `make token P=01 CLIENT=cs-rep` again. `docker compose logs gateway` shows the `auth_rejected` reason. |
 | `startup_failed ... DATABASE_URL must use TLS for a remote database` | Add `sslmode=require` to the URL in `.env` (Neon's console URL already has it). |
-| Every call is denied with `could not be recorded in the audit log` after switching to Neon | The tables are missing (run `make audit-init P=01`), or Neon is unreachable. `docker compose logs gateway` shows `"audited": false`. |
+| Every call is denied with `could not be recorded in the audit log` after switching to Neon | The tables are missing (run `make db-init P=01`), or Neon is unreachable. `docker compose logs gateway` shows `"audited": false`. |
+| `make ask` prints `memory problem: recall: ...` | The memory database or the embedding server did not answer. The answer is unaffected; memory is skipped for that run. Check `MEMORY_DATABASE_URL` (or the local `db`) and that `make models P=01` finished. |
+| `make ask` fails with `dependency failed to start: container ... embeddings ... is unhealthy` | The model file is missing: run `make models P=01` once. |
+| `make db-roles` stops with `has an elevated attribute` | One of the roles was created another way (console, CLI) with extra rights. Drop it as the owner (`DROP ROLE ...`) and run `make db-roles P=01` again. |
 | `make up` stops with `required variable KC_ADMIN_PASSWORD is missing` | `.env` was created before Milestone 3 and the backfill didn't run. Run `make up P=01` from the repo root; it adds the missing keys. |

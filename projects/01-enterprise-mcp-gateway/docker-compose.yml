@@ -1,11 +1,13 @@
-# Project 01: Ridgeline enterprise MCP gateway + Keycloak + OPA + Postgres (audit) + n8n (approvals)
-# + mock carrier and AR APIs.
+# Project 01: Ridgeline enterprise MCP gateway + Keycloak + OPA + Postgres/pgvector (audit, memory)
+# + n8n (approvals) + mock carrier and AR APIs, and the CS copilot that calls the gateway.
 #   make up P=01             create/backfill .env (random secrets), build, start, wait until healthy
 #   make gateway-test P=01   build the images' test stages and run the gateway and mock-API tests
 #   make live-check P=01     call all four tools through MCP as cs-rep (real Keycloak token)
 #   make token P=01 CLIENT=cs-rep   print a 5-minute access token (e.g. for MCP Inspector)
 #   make audit P=01          the audit report (every call, allowed or denied, with its reason)
 #   make approvals P=01      write requests waiting for a human, with their approval links
+#   make ask P=01 Q="..."    ask the copilot (container, profile "copilot"): tools through the gateway,
+#                            long-term memory in pgvector, embeddings from llama.cpp
 #   make down P=01           stop
 # Each container gets only the variables it needs (no env_file): Salesforce/SAP secrets reach the gateway
 # only, and each mock API only its own shared secret. The mock APIs sit on an internal-only network (no
@@ -15,8 +17,12 @@
 # container only, never the gateway, which needs only Keycloak's public signing keys.
 # OPA (Milestone 4) sits on its own internal network that only the gateway joins, serves the read-only
 # policy/ directory, and its API answers nothing but the two decision queries (policy/system_authz.rego).
-# Audit and approvals (Milestone 5): Postgres holds the audit log on an internal network that only the
-# gateway joins; the gateway's database role can add and read audit rows but not change or delete them.
+# Audit and approvals (Milestone 5): Postgres holds the audit log on an internal network (`data`); the
+# gateway's database role can add and read audit rows but not change or delete them.
+# Copilot (Milestone 6): the same Postgres, with pgvector, holds the copilot's long-term memory in its own
+# schema; the copilot's role can only add and read memory rows. The copilot reaches the gateway and
+# Keycloak on `edge`, Postgres on `data` and the embedding server on `embeddings` (internal, the two of
+# them only). It holds the cs-rep and cs-lead client secrets, like `ops`; never the gateway's.
 # n8n runs the human-approval workflow (n8n/ridgeline-approval.json, imported at every start) and is
 # published on loopback so a person can open the approval form.
 name: ridgeline-p01
@@ -29,7 +35,7 @@ services:
       target: runtime
     image: ridgeline/mcp-gateway:0.5.0
     pull_policy: build
-    networks: [edge, backend, policy, audit, approvals]
+    networks: [edge, backend, policy, data, approvals]
     ports:
       # Published on loopback only (no TLS in this local stack).
       - "127.0.0.1:${GATEWAY_PORT:-8765}:8000"
@@ -46,11 +52,11 @@ services:
       OPA_URL: http://opa:8181
       OPA_TIMEOUT_S: "2"
       # Audit (Milestone 5): every call is recorded; a read that cannot be recorded is not returned.
-      AUDIT_DB_HOST: audit-db
-      AUDIT_DB_NAME: audit
+      AUDIT_DB_HOST: db
+      AUDIT_DB_NAME: ridgeline
       AUDIT_DB_USER: gateway_audit
       AUDIT_DB_PASSWORD: ${AUDIT_DB_PASSWORD:?run make up P=01 to generate .env}
-      # Empty: the local audit-db above. Set in .env to a hosted Postgres URL (e.g. Neon, sslmode=require)
+      # Empty: the local `db` service. Set in .env to a hosted Postgres URL (e.g. Neon, sslmode=require)
       # to keep the audit log there instead; see docs/live-sandbox-setup.md. Never commit that URL.
       DATABASE_URL: ${DATABASE_URL:-}
       # Approvals (Milestone 5): write tools wait for a human decision in n8n; no decision in time = deny.
@@ -86,7 +92,7 @@ services:
         condition: service_healthy
       opa:
         condition: service_healthy
-      audit-db:
+      db:
         condition: service_healthy
       n8n:
         condition: service_healthy
@@ -100,26 +106,29 @@ services:
     # Local dev stack: nothing restarts on its own after a reboot.
     restart: "no"
 
-  audit-db:
-    # PostgreSQL 17.11, pinned by digest: the audit log and the approval records. Internal network, shared
-    # with the gateway only; not published to the host. audit/init.sh creates the schema and the gateway's
-    # append-only role the first time the volume is created.
-    image: postgres:17-alpine@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
+  db:
+    # PostgreSQL 17 with pgvector, pinned by digest: the gateway's audit log and approval records (schema
+    # public, db/audit.sql) and the copilot's long-term memory (schema memory, db/memory.sql). Internal
+    # network only; not published to the host. db/init.sh creates both least-privilege roles and applies
+    # both files the first time the volume is created.
+    image: pgvector/pgvector:pg17@sha256:7d0a41464797aeb9862dfdc0bbf1526b82cfd324cdd8036df19e3545f4a9ccb8
     user: postgres
-    networks: [audit]
-    mem_limit: 256m                  # plenty for the audit log; keeps Docker Desktop's VM headroom
+    networks: [data]
+    mem_limit: 256m                  # plenty for the audit log and memory; keeps Docker Desktop's VM headroom
     expose:
       - "5432"
     environment:
-      POSTGRES_DB: audit
+      POSTGRES_DB: ridgeline
       POSTGRES_PASSWORD: ${AUDIT_DB_ADMIN_PASSWORD:?run make up P=01 to generate .env}
       AUDIT_DB_PASSWORD: ${AUDIT_DB_PASSWORD:?run make up P=01 to generate .env}
+      COPILOT_MEMORY_DB_PASSWORD: ${COPILOT_MEMORY_DB_PASSWORD:?run make up P=01 to generate .env}
     volumes:
-      - audit-data:/var/lib/postgresql/data
-      - ./audit/init.sh:/docker-entrypoint-initdb.d/10-audit.sh:ro
-      - ./audit/schema.sql:/audit/schema.sql:ro
+      - db-data:/var/lib/postgresql/data
+      - ./db/init.sh:/docker-entrypoint-initdb.d/10-db.sh:ro
+      - ./db/audit.sql:/db/audit.sql:ro
+      - ./db/memory.sql:/db/memory.sql:ro
     healthcheck:
-      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "audit"]
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "ridgeline"]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -127,19 +136,20 @@ services:
     read_only: true
     tmpfs:
       - /tmp
-      - /var/run/postgresql:uid=70,gid=70
+      - /var/run/postgresql:uid=999,gid=999
     cap_drop:
       - ALL
     security_opt:
       - no-new-privileges:true
     restart: "no"
 
-  audit-init:
-    # One-off (`make audit-init P=01`): applies audit/schema.sql to a hosted database (Neon). Uses
-    # DATABASE_ADMIN_URL, else DATABASE_URL_UNPOOLED (Neon's direct URL), else DATABASE_URL. Only this
-    # container ever sees the admin URL; the gateway does
-    # not. Not started by `make up` (profile "admin"). The local audit-db runs the same file on its own.
-    image: postgres:17-alpine@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
+  db-init:
+    # One-off (`make db-init P=01`; `make db-roles P=01` runs its SQL in this container too): applies
+    # db/audit.sql and db/memory.sql to a hosted database (Neon). Uses DATABASE_ADMIN_URL, else
+    # DATABASE_URL_UNPOOLED (Neon's direct URL), else DATABASE_URL. Only this container ever sees the
+    # admin URL; the gateway and the copilot do not. Not started by `make up` (profile "admin"). The local
+    # `db` applies the same files on its own.
+    image: pgvector/pgvector:pg17@sha256:7d0a41464797aeb9862dfdc0bbf1526b82cfd324cdd8036df19e3545f4a9ccb8
     profiles: ["admin"]
     user: postgres
     networks: [edge]
@@ -148,14 +158,16 @@ services:
       - >-
         url="$${DATABASE_ADMIN_URL:-$${DATABASE_URL_UNPOOLED:-$$DATABASE_URL}}";
         [ -n "$$url" ] || { echo "set DATABASE_ADMIN_URL (or DATABASE_URL) in .env first" >&2; exit 2; };
-        psql "$$url" -v ON_ERROR_STOP=1 --quiet -f /audit/schema.sql && echo "audit schema is in place"
+        psql "$$url" -v ON_ERROR_STOP=1 --quiet -f /db/audit.sql -f /db/memory.sql &&
+        echo "audit and memory schemas are in place"
     environment:
       DATABASE_ADMIN_URL: ${DATABASE_ADMIN_URL:-}
       DATABASE_URL_UNPOOLED: ${DATABASE_URL_UNPOOLED:-}   # direct connection, preferred for schema changes
       DATABASE_URL: ${DATABASE_URL:-}
       PSQL_HISTORY: /dev/null
     volumes:
-      - ./audit/schema.sql:/audit/schema.sql:ro
+      - ./db/audit.sql:/db/audit.sql:ro
+      - ./db/memory.sql:/db/memory.sql:ro
     read_only: true
     tmpfs:
       - /tmp
@@ -366,18 +378,108 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  copilot:
+    # The CS copilot (Milestone 6), one question per run: `make ask P=01 Q="..." [ROLE=cs-lead]`. Tools and
+    # state through the gateway's MCP endpoint with the role's Keycloak token; long-term memory in the
+    # `memory` schema (MEMORY_DATABASE_URL when set, e.g. Neon; else the local `db`); embeddings from the
+    # `embeddings` service. Not started by `make up` (profile "copilot").
+    build:
+      context: .
+      dockerfile: copilot/Dockerfile
+      target: runtime
+      additional_contexts:
+        agentcore: ../../agent-core
+    image: ridgeline/cs-copilot:0.6.0
+    pull_policy: never               # local build only: `make ask` and `make models` build it first
+    profiles: ["copilot"]
+    networks: [edge, data, embeddings]
+    environment:
+      GATEWAY_URL: http://gateway:8000/mcp
+      OIDC_TOKEN_URL: http://keycloak:8080/realms/ridgeline/protocol/openid-connect/token
+      CS_REP_CLIENT_SECRET: ${CS_REP_CLIENT_SECRET:?run make up P=01 to generate .env}
+      CS_LEAD_CLIENT_SECRET: ${CS_LEAD_CLIENT_SECRET:?run make up P=01 to generate .env}
+      APPROVAL_TIMEOUT_S: ${APPROVAL_TIMEOUT_S:-120}
+      # The model: scripted plans until Milestone 7 chooses a local chat model.
+      LLM_PROVIDER: ${COPILOT_LLM_PROVIDER:-scripted}
+      MEMORY_BACKEND: pgvector
+      MEMORY_DATABASE_URL: ${MEMORY_DATABASE_URL:-}
+      MEMORY_DB_HOST: db
+      MEMORY_DB_NAME: ridgeline
+      COPILOT_MEMORY_DB_PASSWORD: ${COPILOT_MEMORY_DB_PASSWORD:?run make up P=01 to generate .env}
+      EMBEDDINGS_URL: http://embeddings:8080
+    depends_on:
+      embeddings:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  embeddings:
+    # llama.cpp server b12282 (CPU), pinned by digest: OpenAI-compatible /v1/embeddings for
+    # nomic-embed-text-v1.5 (768 dimensions) from the `models` volume (`make models P=01` fills it,
+    # checksum-verified). Internal network shared with the copilot only; no internet, not published.
+    image: ghcr.io/ggml-org/llama.cpp:server-b12282@sha256:086942d6ac097c894d9d5bbaf8085c53af85e113fbb9d6d61b3748863c86aa5f
+    profiles: ["copilot"]
+    command: ["-m", "/models/nomic-embed-text-v1.5.Q8_0.gguf", "--embedding", "--pooling", "mean",
+              "-c", "2048", "-b", "2048", "-ub", "2048", "--threads", "2", "--host", "0.0.0.0", "--port", "8080"]
+    networks: [embeddings]
+    mem_limit: 512m
+    expose:
+      - "8080"
+    volumes:
+      - models:/models:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+      start_period: 3s
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+
+  models:
+    # One-off (`make models P=01`): downloads the embedding model into the `models` volume and verifies
+    # its SHA-256 (copilot/fetch_model.py). Same image as the copilot. Profile "admin".
+    image: ridgeline/cs-copilot:0.6.0
+    pull_policy: never
+    profiles: ["admin"]
+    entrypoint: ["python", "copilot/fetch_model.py"]
+    networks: [edge]
+    volumes:
+      - models:/models
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
 networks:
   edge: {}
   backend:
     internal: true
   policy:
     internal: true
-  audit:
-    internal: true
+  data:
+    internal: true    # Postgres: the gateway (audit) and the copilot (memory)
+  embeddings:
+    internal: true    # copilot <-> embedding server only
   approvals:
     internal: true    # gateway <-> n8n only (approval requests and callbacks)
   n8n-public: {}      # publishes the approval form on 127.0.0.1; no other service joins it
 
 volumes:
-  audit-data: {}      # the audit log survives `make down`; `docker volume rm ridgeline-p01_audit-data` resets it
+  db-data: {}         # audit log and memory survive `make down`; `docker volume rm ridgeline-p01_db-data` resets them
+  models: {}          # the embedding model (make models P=01)
   n8n-data: {}        # n8n's own database (owner account, encrypted credential, pruned execution history)

@@ -36,7 +36,7 @@ flowchart TB
 ## Agentic AI concepts demonstrated
 | # | Concept | How this project uses it |
 |---|---------|--------------------------|
-| 1 | Memory & State | Long-term: answered questions, account aliases (pgvector). State: the current case and its open orders, refreshed every iteration. |
+| 1 | Memory & State | Long-term: answered questions and learned account aliases in Postgres + pgvector, embedded by nomic-embed-text-v1.5 on llama.cpp, recalled only for callers with the same access. State: the current case and its open orders, read through the gateway every iteration. |
 | 2 | Orchestration | The gateway is the controlled **environment** that every manager and micro agent in Projects 02–08 acts through. |
 | 3 | RAG | Customer service policy and escalation matrix are retrieved and cited (`[customer-service-policy.md#0]`). |
 | 4 | Harness | agent-core loop: context injection (policy, skills, memory), compaction for long chats, progress files per conversation. |
@@ -49,16 +49,22 @@ flowchart TB
 ## Run it
 ```bash
 make up P=01            # from the repo root: create/backfill .env, build + start gateway, Keycloak, OPA,
-                        # Postgres (audit), n8n (approvals) and the mock APIs (Docker Desktop)
+                        # Postgres + pgvector (audit, memory), n8n (approvals) and the mock APIs (Docker Desktop)
+make models P=01        # once: download the embedding model (146 MB, SHA-256 verified) into a Docker volume
+make ask P=01 Q="Summit Contractors says SO-104233 hasn't arrived and they were billed. What's going on?"
+                        # the copilot in its container: tools through the gateway, memory in pgvector
+                        # (ROLE=cs-lead to ask as a lead; Q=--list for the questions the scripted model knows)
 make opa-test P=01      # Rego unit tests + format check for policy/, in the pinned OPA image
 make gateway-test P=01  # gateway + mock-API tests, inside their images' test stages (real OPA binary)
+make copilot-test P=01  # copilot image tests with the real MCP SDK (no network)
 make test P=01          # includes wire-level MCP + identity tests while the stack is up (skipped otherwise);
                         # live Salesforce/SAP backends are detected and the seed-only comparisons skipped
 make live-check P=01    # call all four tools through MCP as cs-rep (real Keycloak token, real OPA decision)
 make token P=01 CLIENT=cs-rep   # print a 5-minute access token, e.g. to paste into MCP Inspector
-make audit-init P=01    # one time, only with DATABASE_URL set (Neon): create the audit tables there
-make audit-role P=01    # then: a least-privilege gateway_audit role in Neon, written into DATABASE_URL
+make db-init P=01       # one time, only with DATABASE_URL set (Neon): create the audit and memory tables there
+make db-roles P=01      # then: least-privilege gateway_audit and copilot_memory roles, written into .env
 make audit P=01         # the audit report: every call, allowed or denied, with its reason; approvals
+                        # (ARGS=--trace=<id> shows one copilot run's calls)
 make approvals P=01     # write requests waiting for a human, with their approval-form links
 make request-case P=01  # as cs-lead, request a CRM case and wait for your decision in the n8n form
 make arch-check P=01
@@ -76,8 +82,57 @@ make eval P=01          # scripted evals vs evals/baseline.json
 | 3 | Authentication | Keycloak realm with `cs-rep` and `cs-lead` clients; the gateway validates JWTs | Done |
 | 4 | Authorization with OPA | Per-tool scope policies and a data rule (reps only see accounts in their region) | Done |
 | 5 | Guardrails, audit, approvals | Rate limits, PII masking, audit table and `/audit` report; n8n approval for `create_case`, denying on timeout | Done |
-| 6 | Copilot on the gateway, long-term memory | The copilot calls the gateway through an MCP client; RAG and skills; Postgres + pgvector memory | Planned |
+| 6 | Copilot on the gateway, long-term memory | The copilot calls the gateway through an MCP client; RAG and skills; Postgres + pgvector memory | Done |
 | 7 | Evals and A2A card | Real-model eval baseline (Ollama); publish the copilot's Agent Card | Planned |
+
+**Milestone 6 (copilot on the gateway, long-term memory): done.** The copilot now runs in its own container and reaches every enterprise system only through the gateway, as an MCP client (`McpToolSource`, official SDK). Every tool call and every read for its state snapshot carries the asking role's Keycloak token and the run's trace id, so OPA authorizes it and the audit log can show exactly what one answer cost. Long-term memory is Postgres + pgvector: answered questions and learned account aliases, embedded by nomic-embed-text-v1.5 on a local llama.cpp server, and recalled only for callers with the same access. Details: [docs/agent-architecture.md](docs/agent-architecture.md#the-copilot-on-the-gateway-milestone-6).
+
+The demo question asked twice through the gateway (`make ask P=01 Q="..."`, seed CRM/ERP, memory in Neon):
+```text
+role=cs-rep  status=answered  iterations=2  tool_calls=4  tools=search_accounts,get_sales_order,track_shipment,get_open_invoices
+memory: PgVectorMemory (nomic-embed-text-v1.5)
+  recalled nothing (first time this audience asks something like this)
+
+ANSWER
+SO-104233 for Summit Contractors LLC (ACCT-1002) shipped 2026-10-29 from Columbus OH with Granite Freight Lines on SHP-55012. ...
+Summit was billed $8,370.00 on INV-90388, which is still open. ... confirm the new delivery window with [EMAIL REDACTED].
+
+CITATIONS  customer-service-policy.md#0  escalation-matrix.md#0
+
+TOOL CALLS through the gateway (each authorized by OPA and audited; state reads are too)
+  search_accounts    ok=True    352.2 ms
+  get_sales_order    ok=True    275.9 ms
+  track_shipment     ok=True    331.8 ms
+  get_open_invoices  ok=True    319.9 ms
+
+trace id 348089d1fa2c41c8b6281b014a991d65
+  its gateway audit rows: make audit P=01 ARGS=--trace=348089d1fa2c41c8b6281b014a991d65
+
+# second run, same question
+memory: PgVectorMemory (nomic-embed-text-v1.5)
+  recalled episode (similarity 0.95, from trace 348089d1fa2c): Q: Summit Contractors says SO-104233 hasn't arrived ...
+```
+`make audit P=01 ARGS=--trace=348089d1fa2c41c8b6281b014a991d65` lists the 12 gateway calls of the first run (4 tools plus the state reads of both iterations), all `ok` for `cs-rep`, each with that trace id.
+
+| Copilot on the gateway (Milestone 6) | What works now |
+|---|---|
+| MCP | `McpToolSource` implements agent-core's `ToolSource`; `register_tool_source` turns the gateway's listing into governed tools. Scopes and side effects come from the copilot's own `policy/data.json`: a server that called `create_case` harmless would still get a write that needs `crm.write`. The gateway lists only the tools a token may use, so a rep's copilot has no `create_case` at all |
+| State | The snapshot injected into the prompt is read through the gateway with the caller's token, once per record per iteration. A record outside the caller's region appears as "access denied", without contents |
+| Guardrails | The copilot still checks scope and restricted changes before calling; the region rule is the gateway's, per record. A lead's `create_case` goes to the gateway's n8n approval and waits for a person; the answer reports the real outcome (the CRM's case id, or the gateway's reason for refusing). Any other write is refused by the copilot |
+| Memory | `PgVectorMemory` on `memory.items` (`vector(768)`, HNSW cosine index), in the same database as the audit log: the local `db` container by default, Neon when `MEMORY_DATABASE_URL` is set. Text is PII-masked before it is stored. Recall filters on the caller's audience (scopes + regions) and the embedding model in SQL, so a lead's answers never reach a rep's prompt and vectors of different models are never compared. That separation is the copilot's query, not the database: its one role can read every audience's rows (per-audience row-level security would be the next step for a shared deployment). An episode is found by its question. If the database or the embedder fails, the run answers without memory |
+| Memory (aliases) | A search that found exactly one account under another name ("bbo" → Big Box Outdoor) is remembered as an alias for that audience, through a new `on_answer` hook in agent-core |
+| Embeddings | llama.cpp server (b12282, CPU, digest-pinned) with nomic-embed-text-v1.5 Q8_0 (`search_query:` / `search_document:` prefixes), on a network only the copilot shares. `make models` downloads the model from a pinned revision and checks its SHA-256. Offline runs use a deterministic hashing embedder |
+| Least privilege | Two database roles, locally and in Neon (`make db-roles`): `gateway_audit` (audit tables only) and `copilot_memory` (INSERT and SELECT on `memory.items` only, no temporary tables). Checked live in both databases: `copilot_memory` is refused UPDATE, DELETE, TRUNCATE, DROP, ALTER, CREATE and the audit tables; `gateway_audit` is refused the memory schema. Local-demo limit: the copilot container holds both the cs-rep and cs-lead client secrets, so `ROLE=` picks whose token it uses; in a real deployment the token would come from the signed-in person |
+| Observe | agent-core exposes the current trace id; the copilot sends it as `x-request-id` and the gateway stores it on each audit row. `make audit ARGS=--trace=<id>` filters by it |
+| State (cost) | The snapshot is re-read through the gateway every iteration, as the State layer requires (one call per record per iteration). These reads are authorized and audited by the gateway but are not agent tool calls: they don't count toward the agent's tool budget. The demo question makes 12 gateway calls for 4 tool calls, well inside the 120-per-minute rate limit |
+| Evals | The scripted eval suite (13 cases, unchanged baseline) stays on the offline backend: it measures the harness deterministically. The gateway path is covered by tests on a fake gateway that applies the region rule and lists tools by scope (approved, rejected, a rep refused, out-of-region refusal, recall, aliases) and by `make ask` against the live stack. Milestone 7 adds the real-model baseline |
+| Think | Milestone 7 chooses the local chat model. Until then `make ask` replays scripted plans for known questions (`Q=--list`); everything else in the run is live. A script step can branch on a tool's real result, so a case request's answer follows the human's actual decision |
+| Container | `copilot/Dockerfile`: digest-pinned python:3.12-slim, hashed lock (`mcp`, `httpx2`, `asyncpg`), agent-core added as a named build context so the repository root never enters the build, non-root, read-only, all capabilities dropped |
+
+Verified (Milestone 6):
+- `make ask` (above) on the seeded stack with memory in Neon: answered with citations through the gateway; the second run recalls the first (similarity 0.95); the same question as `cs-lead` recalls nothing (another audience); a different question ("Where is order SO-104233 for Summit Contractors?") recalls the earlier episode at 0.82. A lead's case request with nobody approving was refused by the gateway after `APPROVAL_TIMEOUT_S` and nothing was written.
+- `make test`: 120 project tests, 1 skipped (34 new: the copilot on a fake gateway that applies the region rule, pgvector memory on a fake Postgres that evaluates the real queries, embeddings, token handling, alias learning, `make ask`, `make db-roles`) and 38 agent-core tests (trace context, `on_answer`, store-side audience filtering).
+- `make copilot-test`: 6 tests with the real MCP SDK (an in-process server, and the streamable HTTP request headers). `make gateway-test`: 177 gateway + 9 mock-API tests. `make opa-test`: 21/21. `make eval P=01`: 13/13, no regression.
 
 **Milestone 5 (guardrails, audit, approvals): done.** Agents propose; a human approves. The gateway now has its first write tool, `create_case`, and it runs only after a person approves it in an n8n workflow. Every authenticated tool call, allowed, denied or cancelled, is written to an audit table with its reason (a request without a valid token is refused before it is a tool call, and is logged). Contact details are masked for callers without the PII scope, and every client has a rate limit. Details: [gateway/README.md](gateway/README.md#guardrails-audit-and-approvals).
 

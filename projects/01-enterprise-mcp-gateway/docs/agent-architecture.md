@@ -42,13 +42,13 @@ flowchart TB
 | 9 | Multi-Agent System | One gateway serves many specialist agents, each with its own identity and scopes. |
 
 ## The gateway (the environment every agent acts through)
-The copilot's ACT layer will reach enterprise systems only through this MCP server. Build-out by milestone: **M1** server skeleton (done), **M2** connectors (done; live check passed against Salesforce and the SAP sandbox), **M3** Keycloak identity (done), **M4** OPA authorization (done), **M5** rate limits + PII masking + audit + approvals (done), M6 the copilot switches to `McpToolSource`.
+The copilot's ACT layer reaches enterprise systems only through this MCP server. Build-out by milestone: **M1** server skeleton, **M2** connectors (live check passed against Salesforce and the SAP sandbox), **M3** Keycloak identity, **M4** OPA authorization, **M5** rate limits + PII masking + audit + approvals, **M6** the copilot calls it through `McpToolSource` (all done).
 
 ```mermaid
 flowchart LR
     subgraph Clients["MCP clients"]
         INS["MCP Inspector<br/>(CLI / web UI)"]
-        CP["cs-copilot ACT layer<br/>McpToolSource (M6)"]
+        CP["cs-copilot ACT + STATE<br/>McpToolSource (M6)"]
         OTH["Agents in Projects 02-08"]
     end
     subgraph GW["ridgeline-gateway container (127.0.0.1:8765)"]
@@ -68,13 +68,13 @@ flowchart LR
     CAR[("mock carrier API<br/>X-API-Key")]
     AR[("mock AR API<br/>Bearer")]
     KC[("Keycloak (M3)<br/>realm ridgeline<br/>clients cs-rep, cs-lead")]
-    PG[("Postgres audit (M5)<br/>audit_log · approvals<br/>append-only role, internal network")]
+    PG[("Postgres audit (M5)<br/>audit_log · approvals<br/>append-only role, internal network<br/>(same database as the copilot's memory, M6)")]
     N8N[("n8n (M5)<br/>approval workflow + form")]
     HUMAN(["Human approver<br/>opens the form"])
     INS -- "token" --> KC
-    CP -. "client credentials" .-> KC
+    CP -- "client credentials" --> KC
     INS --> AUTHN
-    CP -.-> AUTHN
+    CP -- "Bearer token + x-request-id (trace id)" --> AUTHN
     OTH -.-> AUTHN
     AUTHN -. "signing keys (JWKS)" .-> KC
     AUTHN --> TS --> MCPS --> CT --> TOOLS --> CONN
@@ -103,16 +103,51 @@ flowchart LR
 | Identity (Guardrails, M3) | Keycloak realm `ridgeline`: one confidential client per agent (`cs-rep`, `cs-lead`), service-account grant only, scopes matching the copilot's tools. The gateway verifies RS256 JWTs (exact issuer, audience `ridgeline-gateway`, expiry) and fails closed with 401 + an RFC 9728 challenge. Each client's token also carries a signed `regions` claim (`cs-rep`: Central; `cs-lead`: every region) | `auth.py`, `keycloak/ridgeline-realm.json`, `docker-compose.yml` |
 | Authorization (Guardrails, M4) | Open Policy Agent decides, the gateway enforces, default deny. **Scope rule:** each tool needs its scope. **Restricted changes:** pricing, credit-limit and payment-term changes are always denied. **Data rule:** a record is returned only if its account's region is one of the caller's regions; an unknown region is lead-only. The call is checked before the tool runs and again on the resolved record before anything is returned; a tool that skips the data check is refused. `tools/list` shows only the tools a caller's scopes cover. OPA unreachable, slow or malformed means deny, and the gateway will not start without it. Region denials say "access denied" (existence is disclosed to internal reps on purpose) | `policy.py`, `server.py`, `policy/gateway.rego`, `policy/data.json`, `policy/system_authz.rego` |
 | Approvals (Guardrails, M5) | Agents propose, a human approves. `create_case`, the only write, runs after the policy checks and an explicit Approve from a named person in the n8n form. The request is recorded before anyone is asked; rejection, timeout (`APPROVAL_TIMEOUT_S`), n8n failure or a lost record all refuse the write. Approval links reach only the operator, never an agent. n8n is on a network only the gateway shares and checks a shared secret on its webhook | `approvals.py`, `server.py`, `../n8n/ridgeline-approval.json` |
-| Audit (Observe, M5) | One Postgres row per authenticated tool call, allowed, denied or cancelled, with the reason code and masked arguments; approvals in their own table. Append-only database role; a read that cannot be audited is not returned. `GET /audit` with scope `audit.read` (operator identity `p01-auditor` only) | `audit.py`, `../audit/init.sh`, `admin/audit_report.py` |
+| Audit (Observe, M5) | One Postgres row per authenticated tool call, allowed, denied or cancelled, with the reason code and masked arguments; approvals in their own table. Append-only database role; a read that cannot be audited is not returned. `GET /audit` with scope `audit.read` (operator identity `p01-auditor` only). Since M6 each row carries the copilot's trace id (`make audit P=01 ARGS=--trace=<id>`) | `audit.py`, `../db/audit.sql`, `../db/init.sh`, `admin/audit_report.py` |
 | PII and rate limits (Guardrails, M5) | Contact emails and phones masked in results without `crm.pii`; a sliding one-minute limit per client before policy or any backend. Reason codes for every denial come from one list in `policy/data.json` | `pii.py`, `ratelimit.py`, `policy.py` |
 | Multi-Agent (concept 9) | Each agent has its own identity, scopes and regions; the policy decides per agent, and the gateway logs which agent made each call and why it was denied | same |
-| Memory & State (concept 1, partial) | Account aliases (`BBO` for Big Box Outdoor) are searchable in the CRM (SOSL in Salesforce); long-term memory itself is M6 | `connectors/salesforce.py` |
+| Memory & State (concept 1) | Account aliases (`BBO` for Big Box Outdoor) are searchable in the CRM (SOSL in Salesforce). The copilot's long-term memory (M6, below) lives in the same Postgres, in its own schema and role | `connectors/salesforce.py`, `../db/memory.sql` |
 | Tests | Config, connector (fake transports) and tool-contract tests in the gateway image; mock-API tests over real HTTP; stdlib wire-level tests over the running stack; `make live-check` for the live sandboxes. Policy: Rego unit tests (`make opa-test`), gateway tests against a real OPA, and one decision table (`policy/decision_cases.json`) run against both the Rego and the copilot's offline copy | `gateway/tests/`, `mock_apis/tests/`, `tests/test_gateway_http.py`, `tests/test_policy.py`, `policy/gateway_test.rego`, `admin/live_check.py` |
+
+## The copilot on the gateway (Milestone 6)
+`make ask P=01 Q="..."` runs the copilot in its own container. Its tools and its state snapshot are the gateway's MCP tools, called with the asking role's Keycloak token, so every read the agent makes, including the context injected into its prompt, is authorized by OPA, rate-limited and audited under the run's trace id. Long-term memory is Postgres + pgvector.
+
+```mermaid
+flowchart LR
+    subgraph CC["copilot container (make ask)"]
+        AG["agentcore.Agent<br/>cs-copilot"]
+        MTS["ACT + STATE<br/>McpToolSource<br/>(official MCP SDK client)"]
+        MEM["REMEMBER<br/>PgVectorMemory"]
+        EMB["LlamaCppEmbedder<br/>search_query: / search_document:"]
+        AG --> MTS
+        AG --> MEM --> EMB
+    end
+    KC[("Keycloak<br/>cs-rep / cs-lead")]
+    GW["MCP gateway<br/>identity · OPA · rate limit · audit · approvals"]
+    LL[("llama.cpp server<br/>nomic-embed-text-v1.5, 768-d<br/>internal network")]
+    DB[("Postgres + pgvector<br/>schema memory: items(audience, kind, text,<br/>model, embedding vector(768), hnsw cosine)<br/>local db or Neon (MEMORY_DATABASE_URL)")]
+    MTS -- "client credentials" --> KC
+    MTS -- "streamable HTTP, Bearer + x-request-id" --> GW
+    EMB --> LL
+    MEM -- "copilot_memory role: INSERT, SELECT" --> DB
+```
+
+| Layer / concept | What changed | Code |
+|---|---|---|
+| MCP (concept 6) | `McpToolSource` implements agent-core's `ToolSource` with the official SDK over streamable HTTP. `build.py` registers the gateway's tools with `register_tool_source`, taking each tool's scope and side effect from the copilot's own `policy/data.json`, never from the server's description. The gateway lists only what the caller's token may use, so a rep's registry has no `create_case`. A gateway refusal comes back as a tool error that THINK sees as data | `cs_copilot/agent/mcp_client.py`, `build.py` |
+| State | `GatewayStateProvider` builds the snapshot through the same tools, once per record per iteration. A refused record shows as "access denied" without contents (closes the Milestone 0 TODO) | `cs_copilot/agent/state.py` |
+| Guardrails | With the gateway backend the copilot still checks scope and restricted changes before a call, and leaves the region rule to the gateway, which knows each record's account. `create_case` passes to the gateway's human approval (n8n) and waits; any other write is refused locally | `cs_copilot/agent/guardrails.py` |
+| Memory | `PgVectorMemory`: masked text, the caller's audience and the embedding model stored with each vector; recall filters on both in SQL and orders by cosine distance. An episode's vector is its question, so new questions are compared with past questions. A database or embedder failure skips memory and never loses the answer | `cs_copilot/agent/memory.py`, `db/memory.sql` |
+| Memory (aliases) | An `on_answer` hook (new in agent-core) keeps a search that found exactly one account under another name ("bbo") as an alias memory for that audience; recall brings it into later prompts | `build.py` `learn_aliases`, `agent-core/agentcore/loop.py` |
+| Embeddings | llama.cpp's OpenAI-compatible server with nomic-embed-text-v1.5 (Q8_0, 768 dimensions; `make models` downloads it, SHA-256 pinned). Offline runs use a deterministic hashing embedder; vectors of different models are never compared | `cs_copilot/agent/embeddings.py`, `copilot/fetch_model.py` |
+| Observe | agent-core exposes the current trace id (`current_trace_id()`); the copilot sends it as `x-request-id`, so the gateway's audit rows for a run join to its trace | `agent-core/agentcore/observe.py`, `admin/audit_report.py --trace` |
+| Think | Until Milestone 7 picks a local chat model, `make ask` replays scripted plans for known questions. A script step can branch on a tool's real result, so a case request's answer follows the human's actual decision | `cs_copilot/agent/reason.py`, `fixtures/llm/ask-lead-create-case.json` |
+| Least privilege | Roles: `gateway_audit` (audit tables only) and `copilot_memory` (INSERT/SELECT on `memory.items` only), locally and in Neon (`make db-roles`). Verified live: each role is refused the other's tables and any UPDATE, DELETE, TRUNCATE, DDL | `db/init.sh`, `db/roles.py`, `db/memory.sql` |
 
 ## Guardrails on the copilot side (Milestone 5)
 | Layer / concept | What changed | Code |
 |---|---|---|
-| Guardrails | Restricted argument names are matched at any depth, in the Rego and in the offline copy alike. The approval hook refuses every write unless an approver is installed; none is by default, and only an explicit `True` approves. The copilot reaches the gateway's n8n approval in Milestone 6 | `cs_copilot/agent/guardrails.py`, `policy/gateway.rego` |
+| Guardrails | Restricted argument names are matched at any depth, in the Rego and in the offline copy alike. The approval hook refuses every write unless an approver is installed; none is by default, and only an explicit `True` approves. Since Milestone 6, on the gateway, `create_case` goes to the gateway's n8n approval instead | `cs_copilot/agent/guardrails.py`, `policy/gateway.rego` |
 | Harness, Observe | Progress files and traces are masked at rest with the same PII mask as answers, through the opt-in `redact` hook on agent-core's `Checkpointer` and `JSONLSink` (tests first) | `agent-core/agentcore/harness.py`, `observe.py`, `cs_copilot/agent/build.py`, `observe.py` |
 | Evals | `lead-create-case-approved`, `-rejected`, `-approval-timeout`: each script names the human decision it assumes | `evals/cases.json`, `fixtures/llm/` |
 
@@ -129,4 +164,4 @@ The copilot's GUARDRAILS layer applies the same policy as the gateway, so a deni
 | Skills | `where-is-my-order` and `billed-not-delivered` say to stop and escalate to a CS lead on a region denial | `skills/` |
 | Evals | `out-of-region-order-denied` (denied twice, escalates, nothing leaks) and `lead-cross-region-allowed` | `evals/cases.json`, `fixtures/llm/` |
 
-Until the copilot calls the gateway (Milestone 6) it resolves a record's region from the in-process mock systems, and a search that would return any account outside the caller's regions is denied whole. After that the gateway does the data check and filters search results itself.
+Offline (demo, tests, scripted evals) the copilot still resolves a record's region from the in-process mock systems, and a search that would return any account outside the caller's regions is denied whole. On the gateway (Milestone 6) the gateway does the data check per record and filters search results itself.

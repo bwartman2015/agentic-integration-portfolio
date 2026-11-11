@@ -61,12 +61,14 @@ gateway/
                                      the test stage adds the pinned OPA binary and ../policy
 ../policy/                          gateway.rego, system_authz.rego, data.json, decision_cases.json, gateway_test.rego
 ../mock_apis/                        FastAPI carrier + AR services, own lock and Dockerfile, tests over real HTTP
-../lock-deps.sh                      ./lock-deps.sh gateway | mock_apis
+../lock-deps.sh                      ./lock-deps.sh gateway | mock_apis | copilot
 ../docker-compose.yml                gateway on 127.0.0.1:${GATEWAY_PORT:-8765}; keycloak on 127.0.0.1:${KEYCLOAK_PORT:-8080};
                                      carrier-api, ar-api internal only; opa on its own internal network;
-                                     audit-db (Postgres) on its own internal network; n8n on 127.0.0.1:${N8N_PORT:-5678};
-                                     ops (profile) for live-check/token/audit/approvals
-../audit/schema.sql, init.sh        audit schema (idempotent, append-only triggers); local role setup
+                                     db (Postgres + pgvector) on the internal `data` network; n8n on 127.0.0.1:${N8N_PORT:-5678};
+                                     ops (profile) for live-check/token/audit/approvals;
+                                     copilot + embeddings (profile "copilot") for `make ask`
+../db/audit.sql, memory.sql, init.sh  audit schema (idempotent, append-only triggers), the copilot's memory
+                                     schema, local role setup; roles.py: least-privilege roles in Neon
 ../n8n/ridgeline-approval.json       the approval workflow, imported and published at every n8n start
 ../keycloak/ridgeline-realm.json     realm, client scopes, clients with a regions claim (secrets are ${ENV} placeholders)
 ../tests/test_gateway_http.py        stdlib wire-level MCP tests against the running stack
@@ -214,8 +216,9 @@ How n8n is protected:
 - At startup the gateway closes any approval request a previous process left `pending` (it stopped while a human was deciding) as `unavailable`. Nothing was written for it. A late form submission reaches no waiting request (the gateway answers n8n with 404) and changes nothing.
 - A read that cannot be audited is not returned (`audit_unavailable`). An approved write is already recorded in `approvals`, so it is reported, and the log line says `"audited": false`.
 - `GET /audit?limit=N` needs a valid token with `audit.read`, held only by the operator identity `p01-auditor` (no agent): totals by outcome and by reason, recent calls, recent approvals. `make audit P=01` prints it.
-- Postgres runs on its own internal network, which only the gateway joins. Its data survives `make down`; `docker volume rm ridgeline-p01_audit-data` resets it.
-- Or keep the audit log in a hosted Postgres such as Neon: set `DATABASE_URL` in `.env` (TLS required for any remote host), run `make audit-init P=01` once and `make audit-role P=01` (a least-privilege `gateway_audit` role, written into `.env`), then `make up`. The schema (`../audit/schema.sql`) is the same file the local container runs; its triggers keep the log append-only even for the table owner. Setup: [Neon](../docs/live-sandbox-setup.md#6-optional-keep-the-audit-log-in-neon-milestone-5).
+- Postgres (with pgvector, since Milestone 6) runs on an internal network shared by the gateway and the copilot. The copilot's role reaches only its own `memory` schema, and the gateway's role cannot read it. Its data survives `make down`; `docker volume rm ridgeline-p01_db-data` resets it.
+- Or keep the audit log in a hosted Postgres such as Neon: set `DATABASE_URL` in `.env` (TLS required for any remote host), run `make db-init P=01` once and `make db-roles P=01` (least-privilege `gateway_audit` and `copilot_memory` roles, written into `.env`), then `make up`. The schema (`../db/audit.sql`) is the same file the local container runs; its triggers keep the log append-only even for the table owner. Setup: [Neon](../docs/live-sandbox-setup.md#6-optional-keep-the-audit-log-and-the-copilots-memory-in-neon-milestones-5-6).
+- `make audit P=01 ARGS=--trace=<id>` shows only the calls one copilot run made: the copilot sends its trace id as `x-request-id`, and each audit row stores it.
 
 **PII masking.** Contact emails, phone numbers and SSNs in results are replaced with `[EMAIL REDACTED]` / `[PHONE REDACTED]` / `[SSN REDACTED]` unless the token holds `crm.pii` (cs-lead only). Only string values change, so JSON numbers and record IDs are untouched; a bare 7-digit number is masked only in the `555-0142` form, so `PRO 123.4567` stays. Audit rows store arguments masked for every caller, and the stored approval subject is masked too. The copilot (agent-core) uses the same patterns; `tests/test_milestone0.py` fails if they drift.
 
@@ -231,9 +234,9 @@ How n8n is protected:
 To move the base image, update the digest in both Dockerfiles (`docker pull python:3.12-slim`, then `docker image inspect --format '{{index .RepoDigests 0}}' python:3.12-slim`). To move OPA, update the image and digest in `../docker-compose.yml` and `gateway/Dockerfile` together (`make opa-test` reads the Compose pin).
 
 ## Notes for later milestones
-- `gateway:*` is in `GATEWAY_ALLOWED_HOSTS`, so containers on the project network (`ops`, n8n, and the copilot in M6) can call the gateway. `/mcp` still needs a token; n8n uses only `/approvals/callback`.
+- `gateway:*` is in `GATEWAY_ALLOWED_HOSTS`, so containers on the project network (`ops`, n8n, the copilot) can call the gateway. `/mcp` still needs a token; n8n uses only `/approvals/callback`.
 - Optional: write approved cases to the Salesforce dev org (`CRM_BACKEND=salesforce`). That needs Case create permission for the connected app's Run As user and a write-capable connector for that one endpoint.
 - The Salesforce Run As user is the identity behind every CRM call. The setup guide recommends a dedicated minimum-access integration user now. The gateway's connector is GET-only either way.
 
-## Why the copilot doesn't use it yet
-The copilot (`../cs_copilot/`) still calls the in-process mocks. In Milestone 6 it switches to an MCP client (`McpToolSource` via `agentcore.register_tool_source`). From then on, the client's policy decides scopes and side effects; the server's own tool descriptions are never trusted for that. Since Milestone 4 the copilot's guardrails already apply the gateway's policy: the same Rego through OPA when `OPA_URL` is set, and a tested offline copy of the rules otherwise. Its own approval hook refuses every write until then.
+## The copilot as a client (Milestone 6)
+`make ask P=01 Q="..."` runs the copilot (`../cs_copilot/`) in its own container as an MCP client of this gateway: `McpToolSource` (official SDK, streamable HTTP) registered through `agentcore.register_tool_source`. It authenticates as the asking role (`cs-rep` or `cs-lead`, Keycloak client credentials) and sends its trace id as `x-request-id`. The client's policy data decides scopes and side effects; this server's tool descriptions are never trusted for that. Its state snapshot reads through the same tools, so context reads are authorized and audited too. A lead's `create_case` waits here for the human decision in n8n, like `make request-case`. Offline (demo, tests, scripted evals) the copilot still uses its in-process tools over the mock systems. Details: [../docs/agent-architecture.md](../docs/agent-architecture.md#the-copilot-on-the-gateway-milestone-6).
