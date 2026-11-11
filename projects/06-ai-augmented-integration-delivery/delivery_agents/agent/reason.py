@@ -27,10 +27,10 @@ def get_reasoner(agent_name: str, llm: LLMProvider) -> Reasoner:
     return Reasoner(llm, system_prompt=AGENT_PROMPTS[agent_name] + "\n\n" + SYSTEM_PROMPT)
 
 
-class ClaudeCodeHeadlessLLM:
-    """THINK provider that runs Claude Code in headless mode (`claude -p`) inside the CI runner.
-    TODO(Milestone 3): subprocess ["claude", "-p", prompt, "--output-format", "json"]; parse text + usage
-    into LLMResponse. Never pass secrets in the prompt."""
+class HeadlessCodingAgentLLM:
+    """THINK provider that runs a headless coding agent (its non-interactive CLI) inside the CI runner.
+    TODO(Milestone 3): run the agent's CLI as a subprocess with JSON output; parse text + usage into
+    LLMResponse. Never pass secrets in the prompt."""
 
     def complete(self, system, messages, max_tokens=1024):
-        raise NotImplementedError("ClaudeCodeHeadlessLLM.complete")
+        raise NotImplementedError("HeadlessCodingAgentLLM.complete")

@@ -80,8 +80,9 @@ make up P=01             # first run creates .env from .env.example with random 
 curl -s localhost:8765/healthz
 make opa-test P=01       # Rego unit tests + format check, in the pinned OPA image
 make gateway-test P=01   # builds each image's `test` stage and runs it (no network); does not redeploy
-make test P=01           # includes the raw JSON-RPC-over-HTTP contract tests while the stack is up
-REQUIRE_GATEWAY=1 make test P=01   # CI: fail instead of skipping when the gateway is down
+make up P=01 DB=test     # the stack on the Neon test branch (or DB=local): the wire tests need one of them
+make test P=01           # includes the raw JSON-RPC-over-HTTP contract tests while such a stack is up
+REQUIRE_GATEWAY=1 make test P=01   # CI: fail instead of skipping when the gateway is down or on main
 make live-check P=01     # every tool through MCP; result per tool with its client and configured backend
 make audit P=01          # audit report (as p01-auditor, the only identity with audit.read)
 make approvals P=01      # pending write requests and their approval links (operator token)
@@ -219,6 +220,7 @@ How n8n is protected:
 - Postgres (with pgvector, since Milestone 6) runs on an internal network shared by the gateway and the copilot. The copilot's role reaches only its own `memory` schema, and the gateway's role cannot read it. Its data survives `make down`; `docker volume rm ridgeline-p01_db-data` resets it.
 - Or keep the audit log in a hosted Postgres such as Neon: set `DATABASE_URL` in `.env` (TLS required for any remote host), run `make db-init P=01` once and `make db-roles P=01` (least-privilege `gateway_audit` and `copilot_memory` roles, written into `.env`), then `make up`. The schema (`../db/audit.sql`) is the same file the local container runs; its triggers keep the log append-only even for the table owner. Setup: [Neon](../docs/live-sandbox-setup.md#6-optional-keep-the-audit-log-and-the-copilots-memory-in-neon-milestones-5-6).
 - `make audit P=01 ARGS=--trace=<id>` shows only the calls one copilot run made: the copilot sends its trace id as `x-request-id`, and each audit row stores it.
+- Each database is stamped with the environment it serves (`main`, `test` or `local`, `../db/stamp.sql`). The gateway reads the stamp at startup, logs it, and reports it in `/healthz` as `"database"` (a label only, never a host). The wire tests refuse to run unless it is `test` or `local`, so automated tests never write to the Neon main branch: `make up P=01 DB=test` runs the stack on the Neon `test` branch, `DB=local` on the local Postgres ([setup](../docs/live-sandbox-setup.md#6b-a-neon-test-branch-for-automated-tests-milestone-7)).
 
 **PII masking.** Contact emails, phone numbers and SSNs in results are replaced with `[EMAIL REDACTED]` / `[PHONE REDACTED]` / `[SSN REDACTED]` unless the token holds `crm.pii` (cs-lead only). Only string values change, so JSON numbers and record IDs are untouched; a bare 7-digit number is masked only in the `555-0142` form, so `PRO 123.4567` stays. Audit rows store arguments masked for every caller, and the stored approval subject is masked too. The copilot (agent-core) uses the same patterns; `tests/test_milestone0.py` fails if they drift.
 

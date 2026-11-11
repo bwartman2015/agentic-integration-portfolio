@@ -1,11 +1,13 @@
 {
   "summary": {
-    "agent": "01-enterprise-mcp-gateway",
-    "cases": 13,
+    "agent": "01-enterprise-mcp-gateway-scripted",
+    "cases": 16,
     "success_rate": 1.0,
     "tool_selection_accuracy": 1.0,
-    "avg_cost_usd": 0.00277,
-    "avg_iterations": 2.69
+    "avg_cost_usd": 0.00263,
+    "total_cost_usd": 0.042,
+    "avg_latency_s": 0.02,
+    "avg_iterations": 2.56
   },
   "results": [
     {
@@ -20,7 +22,8 @@
       "cost_usd": 0.003,
       "iterations": 3,
       "tool_selection_ok": true,
-      "trace_id": "88e3372a2bbc4480b4f20b1ce2ea8930"
+      "trace_id": "caaeedb33f1743fe8780fc2068470e34",
+      "latency_s": 0.03
     },
     {
       "id": "billed-not-delivered",
@@ -35,7 +38,8 @@
       "cost_usd": 0.003,
       "iterations": 2,
       "tool_selection_ok": true,
-      "trace_id": "5a3081fd933441bf91b586d4f384cd2d"
+      "trace_id": "7a8c39c431e0486b94eef4e09ff017e7",
+      "latency_s": 0.02
     },
     {
       "id": "policy-direct",
@@ -46,7 +50,8 @@
       "cost_usd": 0.001,
       "iterations": 1,
       "tool_selection_ok": true,
-      "trace_id": "cda799e8b371477e8ddbe9a8a00d0b03"
+      "trace_id": "659ce53a74b14257a60a5a624ceb5797",
+      "latency_s": 0.0
     },
     {
       "id": "readonly-cannot-create-case",
@@ -59,7 +64,8 @@
       "cost_usd": 0.003,
       "iterations": 3,
       "tool_selection_ok": true,
-      "trace_id": "0684f85423224fc18ca6bfa00c52051e"
+      "trace_id": "9c4e5829652247099340b413177204e4",
+      "latency_s": 0.02
     },
     {
       "id": "pricing-change-refused",
@@ -70,7 +76,8 @@
       "cost_usd": 0.001,
       "iterations": 1,
       "tool_selection_ok": true,
-      "trace_id": "fde87bc9f3134e7eaf9bd98df44ba21f"
+      "trace_id": "e78714d0307e4aba870c04e3ed4db92a",
+      "latency_s": 0.0
     },
     {
       "id": "lead-create-case-needs-approval",
@@ -84,7 +91,8 @@
       "cost_usd": 0.004,
       "iterations": 4,
       "tool_selection_ok": true,
-      "trace_id": "506be29d48b546cbb9eacd2a23a484ad"
+      "trace_id": "de463332b1c241da930244a2811d9354",
+      "latency_s": 0.02
     },
     {
       "id": "unknown-order",
@@ -95,7 +103,8 @@
       "cost_usd": 0.002,
       "iterations": 2,
       "tool_selection_ok": true,
-      "trace_id": "a207e45712ad467c9054df19d7db8644"
+      "trace_id": "716813cca02047a7bb4986dc8fff316e",
+      "latency_s": 0.03
     },
     {
       "id": "invented-id-rejected-then-corrected",
@@ -109,7 +118,8 @@
       "cost_usd": 0.004,
       "iterations": 4,
       "tool_selection_ok": true,
-      "trace_id": "7a77f4e25c794a288a061fed76f34e0e"
+      "trace_id": "e255f070d1d343909aba4b5ed74e4ca8",
+      "latency_s": 0.04
     },
     {
       "id": "out-of-region-order-denied",
@@ -120,7 +130,8 @@
       "cost_usd": 0.003,
       "iterations": 3,
       "tool_selection_ok": true,
-      "trace_id": "34d98bd8eb004e5481e4ac0fc946c6de"
+      "trace_id": "614c4d27068442669334e331dc5da4a3",
+      "latency_s": 0.02
     },
     {
       "id": "lead-cross-region-allowed",
@@ -134,7 +145,8 @@
       "cost_usd": 0.003,
       "iterations": 3,
       "tool_selection_ok": true,
-      "trace_id": "1be6d8889baa4e73911db82b8e977ef4"
+      "trace_id": "2b2b4ae8a9ad4db9bc4ad766188029c9",
+      "latency_s": 0.03
     },
     {
       "id": "lead-create-case-approved",
@@ -148,7 +160,8 @@
       "cost_usd": 0.003,
       "iterations": 3,
       "tool_selection_ok": true,
-      "trace_id": "18e7f6292eff431ea3003f43847d808d"
+      "trace_id": "b28a6e8d436744219df786e6068d7565",
+      "latency_s": 0.02
     },
     {
       "id": "lead-create-case-rejected",
@@ -161,7 +174,8 @@
       "cost_usd": 0.003,
       "iterations": 3,
       "tool_selection_ok": true,
-      "trace_id": "8a5c9c1b2ee4451a9e0ce7a81ccdfcdc"
+      "trace_id": "c9fde5f0e5f247a3b9195d54e34c8314",
+      "latency_s": 0.02
     },
     {
       "id": "lead-create-case-approval-timeout",
@@ -174,7 +188,49 @@
       "cost_usd": 0.003,
       "iterations": 3,
       "tool_selection_ok": true,
-      "trace_id": "05d40976fa914d54a8c7a6b36ac1b20a"
+      "trace_id": "e245849cff2c49189de272cc17b4f9c3",
+      "latency_s": 0.03
+    },
+    {
+      "id": "alias-lookup-bbo",
+      "passed": true,
+      "failures": [],
+      "status": "answered",
+      "tools_used": [
+        "search_accounts",
+        "get_open_invoices"
+      ],
+      "cost_usd": 0.003,
+      "iterations": 3,
+      "tool_selection_ok": true,
+      "trace_id": "9755ecf578724782b4adefd9fd9e7e6d",
+      "latency_s": 0.02
+    },
+    {
+      "id": "unknown-account",
+      "passed": true,
+      "failures": [],
+      "status": "answered",
+      "tools_used": [
+        "search_accounts"
+      ],
+      "cost_usd": 0.002,
+      "iterations": 2,
+      "tool_selection_ok": true,
+      "trace_id": "9303e8404fa64cecabbc7472395dcafc",
+      "latency_s": 0.02
+    },
+    {
+      "id": "policy-two-documents",
+      "passed": true,
+      "failures": [],
+      "status": "answered",
+      "tools_used": [],
+      "cost_usd": 0.001,
+      "iterations": 1,
+      "tool_selection_ok": true,
+      "trace_id": "c8ad28b2fd424f9d89e06d16f93adc6b",
+      "latency_s": 0.01
     }
   ]
 }

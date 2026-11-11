@@ -536,6 +536,20 @@ class ApprovalTests(_Governed):
         self.audit.fail = True                               # store down at startup: logged, not fatal
         self.assertEqual(await server.close_orphaned_approvals(self.audit), [])
 
+    async def test_database_environment_is_read_from_the_stamp_and_unknown_on_failure(self):
+        self.audit.stamp = "test"
+        self.assertEqual(await server.read_environment(self.audit), "test")
+        self.audit.stamp = None                              # never stamped
+        self.assertEqual(await server.read_environment(self.audit), "unknown")
+        self.audit.fail = True                               # store down at startup: logged, not fatal
+        with self.assertLogs("ridgeline.gateway", logging.WARNING):
+            self.assertEqual(await server.read_environment(self.audit), "unknown")
+
+    def test_environment_stamp_sql_and_values(self):
+        from ridgeline_gateway.audit import ENVIRONMENTS, SELECT_ENVIRONMENT
+        self.assertEqual(ENVIRONMENTS, {"main", "test", "local"})
+        self.assertIn("ridgeline_environment", SELECT_ENVIRONMENT)
+
     def test_orphan_cleanup_sql_touches_only_pending_requests(self):
         from ridgeline_gateway.audit import CLOSE_ORPHANED
         self.assertIn("WHERE status = 'pending'", CLOSE_ORPHANED)

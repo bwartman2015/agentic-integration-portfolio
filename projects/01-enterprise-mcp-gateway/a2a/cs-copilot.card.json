@@ -1,17 +1,49 @@
 {
   "name": "cs-copilot",
-  "description": "You are Ridgeline's Customer Service Copilot. Answer order, shipment and invoice questions using only gateway tools and cited policy documents. Recommend a next step; creating a case needs approval.",
-  "url": "http://localhost:0",
-  "version": "0.1.0",
+  "description": "Ridgeline Supply Co. customer service copilot (fictional company, synthetic data). Answers questions about a customer's orders, shipments and invoices with evidence from the CRM, ERP, carrier and AR systems (read through a governed MCP gateway) and cites customer service policy. Proposes CRM cases; a human approves every case before it is created. Acts with the caller's own identity: send a Keycloak access token for your client (client credentials).",
+  "url": "http://localhost:8701",
+  "version": "0.7.0",
   "skills": [
     {
       "id": "order-status",
       "name": "Order, shipment and invoice status",
-      "description": "Where is an order, has it shipped, has it been billed",
+      "description": "Where is a customer's order, has it shipped, when will it arrive, is it late against the SLA, and what is still open on the customer's account. Needs an order number or an account name or alias. Reps see only accounts in their own region; a lead sees all.",
       "tags": [
-        "Customer Service \u00b7 IT Platform"
+        "customer-service",
+        "orders",
+        "shipping",
+        "accounts-receivable"
       ],
-      "examples": []
+      "examples": [
+        "Where is order SO-104233 for Summit Contractors?",
+        "Summit Contractors says SO-104233 hasn't arrived and they were billed. What's going on?"
+      ]
+    },
+    {
+      "id": "billing-dispute",
+      "name": "Billed but not delivered",
+      "description": "Compares what a customer was invoiced with what was delivered (tracking and proof of delivery) and recommends the next step from the billing dispute policy. Explains; never changes invoices, prices, credit or payment terms.",
+      "tags": [
+        "customer-service",
+        "billing",
+        "disputes"
+      ],
+      "examples": [
+        "Pinecrest Hardware says they were invoiced for SO-104301 but only got half of it."
+      ]
+    },
+    {
+      "id": "open-case",
+      "name": "Propose a CRM case",
+      "description": "Proposes a CRM case (for example a late delivery) for a CS lead. A human approves or rejects it in the approval workflow before anything is written; reps cannot create cases.",
+      "tags": [
+        "customer-service",
+        "cases",
+        "human-approval"
+      ],
+      "examples": [
+        "Open a case for Summit Contractors about the late delivery of SO-104233 and confirm the new delivery window."
+      ]
     }
   ],
   "capabilities": {
@@ -24,9 +56,21 @@
     "text/plain"
   ],
   "securitySchemes": {
-    "bearer": {
-      "type": "http",
-      "scheme": "bearer"
+    "keycloak": {
+      "type": "oauth2",
+      "description": "Keycloak realm ridgeline, audience ridgeline-gateway; the token is passed through to the gateway.",
+      "flows": {
+        "clientCredentials": {
+          "tokenUrl": "http://localhost:8080/realms/ridgeline/protocol/openid-connect/token",
+          "scopes": {
+            "crm.read": "read accounts",
+            "erp.read": "read sales orders",
+            "shipping.read": "read tracking",
+            "ar.read": "read open invoices",
+            "crm.write": "propose cases (human approval required)"
+          }
+        }
+      }
     }
   }
 }

@@ -51,25 +51,32 @@ flowchart TB
 make up P=01            # from the repo root: create/backfill .env, build + start gateway, Keycloak, OPA,
                         # Postgres + pgvector (audit, memory), n8n (approvals) and the mock APIs (Docker Desktop)
 make models P=01        # once: download the embedding model (146 MB, SHA-256 verified) into a Docker volume
+make models P=01 MODEL=chat   # once: the free local chat model, Qwen2.5-1.5B-Instruct (1.1 GB)
 make ask P=01 Q="Summit Contractors says SO-104233 hasn't arrived and they were billed. What's going on?"
                         # the copilot in its container: tools through the gateway, memory in pgvector
-                        # (ROLE=cs-lead to ask as a lead; Q=--list for the questions the scripted model knows)
+                        # (ROLE=cs-lead to ask as a lead; LLM=local for the real local model, any question;
+                        #  without LLM the scripted model answers the questions Q=--list shows)
+make a2a-up P=01        # the copilot's A2A endpoint: Agent Card at http://localhost:8701/.well-known/agent-card.json
 make opa-test P=01      # Rego unit tests + format check for policy/, in the pinned OPA image
 make gateway-test P=01  # gateway + mock-API tests, inside their images' test stages (real OPA binary)
 make copilot-test P=01  # copilot image tests with the real MCP SDK (no network)
-make test P=01          # includes wire-level MCP + identity tests while the stack is up (skipped otherwise);
-                        # live Salesforce/SAP backends are detected and the seed-only comparisons skipped
+make up P=01 DB=test    # the stack on the Neon `test` branch (or DB=local): tests never write to main
+make test P=01          # includes wire-level MCP + identity tests while such a stack is up (skipped otherwise,
+                        # and always skipped on the main branch); live Salesforce/SAP backends are detected
+make a2a-check P=01     # card, a refused request without a token, a task as cs-rep (test stack only)
 make live-check P=01    # call all four tools through MCP as cs-rep (real Keycloak token, real OPA decision)
 make token P=01 CLIENT=cs-rep   # print a 5-minute access token, e.g. to paste into MCP Inspector
 make db-init P=01       # one time, only with DATABASE_URL set (Neon): create the audit and memory tables there
 make db-roles P=01      # then: least-privilege gateway_audit and copilot_memory roles, written into .env
+                        # (TARGET=test: the same for the Neon `test` branch)
 make audit P=01         # the audit report: every call, allowed or denied, with its reason; approvals
                         # (ARGS=--trace=<id> shows one copilot run's calls)
 make approvals P=01     # write requests waiting for a human, with their approval-form links
 make request-case P=01  # as cs-lead, request a CRM case and wait for your decision in the n8n form
 make arch-check P=01
 make demo P=01          # offline demo with a scripted LLM; prints every span by layer
-make eval P=01          # scripted evals vs evals/baseline.json
+make eval P=01          # scripted evals vs evals/baseline.json (offline, seconds)
+make eval P=01 LLM=local   # the real local model vs evals/baseline.local.json (free, offline; 1-2 hours on a laptop CPU)
 ```
 
 ## Status
@@ -83,7 +90,52 @@ make eval P=01          # scripted evals vs evals/baseline.json
 | 4 | Authorization with OPA | Per-tool scope policies and a data rule (reps only see accounts in their region) | Done |
 | 5 | Guardrails, audit, approvals | Rate limits, PII masking, audit table and `/audit` report; n8n approval for `create_case`, denying on timeout | Done |
 | 6 | Copilot on the gateway, long-term memory | The copilot calls the gateway through an MCP client; RAG and skills; Postgres + pgvector memory | Done |
-| 7 | Evals and A2A card | Real-model eval baseline (Ollama); publish the copilot's Agent Card | Planned |
+| 7 | Evals and A2A card | Real-model eval baseline (a free local model on llama.cpp); publish the copilot's Agent Card | Done |
+
+**Milestone 7 (evals and A2A card): done.** The copilot is measured with a real model, published as an A2A agent, and tested without ever touching the demo database. Everything runs on free components.
+
+**Real-model evals.** The same 16 cases run against the scripted model (the deterministic harness check) and a real one: Qwen2.5-1.5B-Instruct, a small open model, on a local llama.cpp server (free, offline, CPU only). Both run on the offline backend (in-process tools over the seeded data, in-memory memory), so they compare the model and nothing else.
+
+| Model | Success | Tool selection | Avg cost / case | Avg latency / case | Avg iterations |
+|---|---|---|---|---|---|
+| Scripted (replays a fixed plan; tests the harness) | 100% | 100% | $0 | 0.0s | 2.56 |
+| Local: Qwen2.5-1.5B-Instruct Q4_K_M, llama.cpp, CPU (`evals/baseline.local.json`) | 12% | 75% | $0 | 92s | 3.81 |
+
+What the gap means: the harness holds. The scripted run passes every case, and with the real model the guardrails hold too: the rep's case request is refused by scope, the pricing change is escalated, the out-of-region order is denied and escalated (marked FAIL only because the escalation does not cite the data access policy), nothing is written without a human's approval, and no invented ID or amount reaches an answer. A 1.5B model on a laptop CPU mostly fails on the work itself: it answers from the injected state instead of calling the tools the rules require, stops a plan early, or escalates when the verifier sends an answer back. Those are exactly the failures the deterministic verifier is there to catch, and each one ended as an escalation, not as a wrong answer. A larger model is the lever: the cases, verifier and baseline stay as they are, and any model behind the provider interface is measured the same way.
+
+| Case | Scripted | Local | Local: tools called | Local latency | Local: why it failed |
+|---|---|---|---|---|---|
+| wismo-basic | PASS | FAIL | search_accounts, get_sales_order | 144s | escalated instead of answering; skipped track_shipment; answer missed a required fact |
+| billed-not-delivered | PASS | FAIL | search_accounts, get_sales_order | 94s | skipped get_open_invoices, track_shipment |
+| policy-direct | PASS | FAIL | - | 41s | escalated instead of answering; answer missed a required fact |
+| readonly-cannot-create-case | PASS | PASS | search_accounts | 81s | - |
+| pricing-change-refused | PASS | PASS | search_accounts, get_open_invoices | 92s | - |
+| lead-create-case-needs-approval | PASS | FAIL | search_accounts, get_sales_order | 86s | answer missed a required fact |
+| unknown-order | PASS | FAIL | load_skill | 128s | escalated instead of answering; answer missed a required fact |
+| invented-id-rejected-then-corrected | PASS | FAIL | search_accounts, get_sales_order, track_shipment, track_shipment | 159s | escalated instead of answering; answer missed a required fact; over the iteration budget |
+| out-of-region-order-denied | PASS | FAIL | - | 119s | answer missed a required fact |
+| lead-cross-region-allowed | PASS | FAIL | search_accounts, get_sales_order | 99s | skipped track_shipment; answer missed a required fact |
+| lead-create-case-approved | PASS | FAIL | search_accounts | 27s | skipped create_case; answer missed a required fact |
+| lead-create-case-rejected | PASS | FAIL | search_accounts | 26s | answer missed a required fact |
+| lead-create-case-approval-timeout | PASS | FAIL | search_accounts | 27s | answer missed a required fact |
+| alias-lookup-bbo | PASS | FAIL | search_accounts, get_open_invoices | 75s | answer missed a required fact |
+| unknown-account | PASS | FAIL | search_accounts, load_skill | 119s | escalated instead of answering; answer missed a required fact; over the iteration budget |
+| policy-two-documents | PASS | FAIL | - | 157s | escalated instead of answering; answer missed a required fact; over the iteration budget |
+
+A hosted model can be plugged in without code changes: `COPILOT_LLM_PROVIDER=anthropic` (or `LLM=claude` on `make eval`, `make ask` and `make a2a-up`) uses Claude through the official SDK with your own API key, and tracks cost from token usage and the prices in `.env`. It is optional and paid, so no baseline in this repository uses it; another hosted model would be one more provider class in `cs_copilot/agent/reason.py`.
+
+| Evals, A2A, test isolation (Milestone 7) | What works now |
+|---|---|
+| Think | `reason.py` stays the only place a model is called. The local model runs in JSON mode (a grammar), so every reply is one valid decision object. The copilot's prompt now states the checks the deterministic verifier applies (IDs and amounts only from tool results, exact citations, stop on a region denial), so a real model is told the rules it is judged by. Found by tracing the local model: agent-core now infers a decision's type when a model omits it but the intent is unambiguous (a tool name, or an answer), and the verifier's feedback shows the exact citation form it expects |
+| Evals | One case list for every model: each case's human decision for writes (`approval`) is part of the case, not of a model's script. Expected answers can list alternative phrasings, so cases test facts, not wording. Reports add latency and total cost. Three new cases: an alias lookup (BBO), an unknown account, a policy answer that needs two cited documents. The eval container gets no gateway, database or Neon settings at all |
+| A2A | `a2a/cs-copilot.card.json`: three skills with examples (order status, billing dispute, propose a case) and a Keycloak client-credentials security scheme. `make a2a-check` against the test stack: card served, a request without a token refused with 401, a task as `cs-rep` returned `completed` with a trace id, and the gateway's audit rows for that trace name `cs-rep` |
+| A2A identity | Keycloak token passthrough, no shared secret: the A2A server verifies the caller's token exactly as the gateway does, builds the caller's principal from its verified scopes and regions, and calls the gateway with that same token. A rep delegating over A2A gets a rep's rights and the audit log names the rep. The server holds no client secret. Registered in Project 08's `a2a/registry.json`, which sends its static mesh token only to specialists that use one |
+| Test isolation | Every database is stamped `main`, `test` or `local`; the gateway reports the stamp in `/healthz`. The wire tests and `make a2a-check` run only when it says `test` or `local`, so automated tests never write to the Neon main branch, which keeps the demo runs. `make up DB=test` uses a Neon `test` branch with its own least-privilege roles; `make db-init` and `make db-roles` refuse a "test" URL that points at a main database. The main branch's early audit rows are development history, from before the test branch existed |
+
+Verified (Milestone 7):
+- `REQUIRE_GATEWAY=1 make test P=01` on the Neon `test` branch: every wire test ran, none skipped. Against a gateway that reports `main` they all skip, and `REQUIRE_GATEWAY=1` turns that into a failure (a test checks both).
+- `make a2a-check P=01` on the test stack, as above.
+- `make test`: 134 project tests (on the test stack every wire test runs; the one skip is the check that only applies under `REQUIRE_GATEWAY=1`) and 43 agent-core tests; `make copilot-test`: 9 (real MCP SDK, RS256 token verification); `make gateway-test`: 179 gateway + 9 mock-API tests; `make opa-test`: 21/21; `make eval P=01`: 16/16 against the updated scripted baseline; `make eval P=01 LLM=local`: 2/16 cases, tool selection 75%, saved as `evals/baseline.local.json`.
 
 **Milestone 6 (copilot on the gateway, long-term memory): done.** The copilot now runs in its own container and reaches every enterprise system only through the gateway, as an MCP client (`McpToolSource`, official SDK). Every tool call and every read for its state snapshot carries the asking role's Keycloak token and the run's trace id, so OPA authorizes it and the audit log can show exactly what one answer cost. Long-term memory is Postgres + pgvector: answered questions and learned account aliases, embedded by nomic-embed-text-v1.5 on a local llama.cpp server, and recalled only for callers with the same access. Details: [docs/agent-architecture.md](docs/agent-architecture.md#the-copilot-on-the-gateway-milestone-6).
 
@@ -126,7 +178,7 @@ memory: PgVectorMemory (nomic-embed-text-v1.5)
 | Observe | agent-core exposes the current trace id; the copilot sends it as `x-request-id` and the gateway stores it on each audit row. `make audit ARGS=--trace=<id>` filters by it |
 | State (cost) | The snapshot is re-read through the gateway every iteration, as the State layer requires (one call per record per iteration). These reads are authorized and audited by the gateway but are not agent tool calls: they don't count toward the agent's tool budget. The demo question makes 12 gateway calls for 4 tool calls, well inside the 120-per-minute rate limit |
 | Evals | The scripted eval suite (13 cases, unchanged baseline) stays on the offline backend: it measures the harness deterministically. The gateway path is covered by tests on a fake gateway that applies the region rule and lists tools by scope (approved, rejected, a rep refused, out-of-region refusal, recall, aliases) and by `make ask` against the live stack. Milestone 7 adds the real-model baseline |
-| Think | Milestone 7 chooses the local chat model. Until then `make ask` replays scripted plans for known questions (`Q=--list`); everything else in the run is live. A script step can branch on a tool's real result, so a case request's answer follows the human's actual decision |
+| Think | (Milestone 6) Before Milestone 7 added a real local model, `make ask` replayed scripted plans for known questions (`Q=--list`); everything else in the run is live. A script step can branch on a tool's real result, so a case request's answer follows the human's actual decision |
 | Container | `copilot/Dockerfile`: digest-pinned python:3.12-slim, hashed lock (`mcp`, `httpx2`, `asyncpg`), agent-core added as a named build context so the repository root never enters the build, non-root, read-only, all capabilities dropped |
 
 Verified (Milestone 6):
@@ -348,8 +400,8 @@ gateway log
 
 **Anti-hallucination guardrail: no invented IDs.** The verifier rejects an answer if any order, PO, invoice, shipment, account or case ID in it (`SO-`, `PO-`, `INV-`, `SHP-`, `ACCT-`, `CASE-` plus digits, any length) does not appear in the request or in a successful tool result. The same goes for money: every dollar amount must equal a number a tool returned, because deterministic code computes totals and the model only quotes them. Every entity in the request must be both addressed and looked up by a tool (a "not found" lookup counts; a policy citation never backs a claim about a customer's order). Every `[source.md#n]` citation must be a real knowledge chunk, and policy questions need a tool result or a valid citation. A rejected answer goes back to the reasoner with the reason, inside the iteration budget; the `invented-id-rejected-then-corrected` eval shows that loop. These checks catch fabricated identifiers and amounts; they do not prove every sentence true, which is what the real-model evals are for.
 
-### Evals (scripted LLM; baseline updated in Milestone 5: 10 → 13 cases)
-Scripted evals replay a fixed model script per case (`fixtures/llm/`), so they test the harness: tool selection, guardrails, verifier and citations, not model judgment. The real-model baseline (`evals/baseline.ollama.json`) arrives in Milestone 7.
+### Evals (scripted LLM; 16 cases since Milestone 7)
+Scripted evals replay a fixed model script per case (`fixtures/llm/`), so they test the harness: tool selection, guardrails, verifier and citations, not model judgment. The real-model comparison (the local model) is in the Milestone 7 section above.
 
 Success 100% · tool selection 100% · avg cost $0.0028 (scripted) · avg iterations 2.69
 

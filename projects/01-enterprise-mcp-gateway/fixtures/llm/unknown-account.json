@@ -1,0 +1,18 @@
+{
+  "description": "Eval: an account that does not exist is reported as not found, not guessed.",
+  "responses": [
+    {
+      "type": "tool",
+      "tool": "search_accounts",
+      "args": {
+        "query": "Northwind Rockets"
+      },
+      "reasoning": "Find the account first."
+    },
+    {
+      "type": "answer",
+      "reasoning": "No match: say so instead of guessing.",
+      "answer": "I couldn't find an account named Northwind Rockets in CRM, so I can't look up its orders. Please check the name or give me an account or order number."
+    }
+  ]
+}

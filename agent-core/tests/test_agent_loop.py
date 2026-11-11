@@ -149,3 +149,18 @@ class AgentLoopTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DecisionTypeInferenceTests(unittest.TestCase):
+    def decide(self, reply):
+        from agentcore import FakeLLM, Reasoner
+        return Reasoner(FakeLLM([reply])).decide({}, [])
+
+    def test_a_missing_type_is_inferred_only_when_unambiguous(self):
+        d = self.decide('{"tool": "get_sales_order", "args": {"sales_order": "SO-1"}}')
+        self.assertEqual((d.kind, d.tool, d.args), ("tool", "get_sales_order", {"sales_order": "SO-1"}))
+        self.assertEqual(self.decide('{"answer": "30 days [policy.md#0]"}').kind, "answer")
+        self.assertEqual(self.decide('{"tool": "x", "answer": "y"}').kind, "escalate")      # ambiguous
+        self.assertEqual(self.decide('{"reasoning": "hmm"}').kind, "escalate")
+        self.assertEqual(self.decide('{"type": "dance"}').kind, "escalate")               # unknown stays unknown
+

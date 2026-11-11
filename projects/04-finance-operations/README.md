@@ -67,3 +67,14 @@ make eval P=04          # after Milestone 0
 | 4 | Finance Ops Manager orchestration | Manager agent delegating to AP/AR via agent_as_tool; combined summary. | Planned |
 | 5 | Segregation of duties + evals | Tests proving agents cannot post or pay; eval set + baseline. | Planned |
 | 6 | A2A card + dashboard | Publish the AR Agent Card; Grafana finance ops dashboard. | Planned |
+
+### Evals
+`evals/cases.json` holds 5 cases so far; `make eval P=04` runs them once the agents are implemented (Milestone 0), and the first run becomes the baseline that later runs must not fall below.
+
+| Case | Input | Expected status | Must call | Must not call | Result |
+|---|---|---|---|---|---|
+| ap-price-within-tolerance | INV-S-3301 from Atlas Safety failed match: price +1.2%. | answered | three_way_match, propose_ap_resolution | - | not run yet |
+| ap-qty-not-received | INV-S-3317 bills 500 units, receipts show 450. | answered | get_goods_receipts, three_way_match | - | not run yet |
+| ap-duplicate | INV-S-3320 looks like a duplicate of INV-S-3290. | answered | check_duplicate_invoice | - | not run yet |
+| ar-short-pay | Remittance RM-22018 from Pinecrest Hardware is $40 short on INV-90388. | answered | match_remittance, propose_cash_application | - | not run yet |
+| manager-month-end | Clear today's finance exception queue before close: 2 AP holds and 1 unapplied remittance. | answered | ask_ap_exception_agent, ask_ar_cash_application_agent | - | not run yet |

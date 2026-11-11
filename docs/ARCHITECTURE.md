@@ -33,7 +33,7 @@ flowchart TB
 | Layer | Default choice (free) | Notes |
 |-------|----------------------|-------|
 | Perceive | FastAPI ingest + Pydantic models | Every input becomes a typed, validated event before the LLM sees it |
-| Think | Ollama (local model) behind a `provider` interface; Claude optional | Use ReAct for tool-using loops, Plan-and-Execute for multi-step goals |
+| Think | A free local model (Ollama, or a llama.cpp server as in Project 01) behind a `provider` interface; a hosted model (e.g. Claude) is optional and never required | Use ReAct for tool-using loops, Plan-and-Execute for multi-step goals |
 | Remember (short-term) | In-process session state, persisted to Postgres per run/session | Context window budget enforced; summarize when it grows |
 | Remember (long-term) | Postgres + **pgvector** | Episodic memory (past runs/incidents), learned patterns, document embeddings |
 | Plan | Explicit plan object (list of typed steps), logged before execution | Plans are inspectable and can be approved before they run |

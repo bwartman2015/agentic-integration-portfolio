@@ -1,0 +1,12 @@
+# `make up P=01 DB=test`: the stack on the Neon `test` branch, for automated tests (wire tests refuse
+# to run against the `main` branch). The URLs come from `make db-roles P=01 TARGET=test`.
+services:
+  gateway:
+    environment:
+      DATABASE_URL: ${DATABASE_URL_TEST:?run make db-roles P=01 TARGET=test first}
+  copilot:
+    environment:
+      MEMORY_DATABASE_URL: ${MEMORY_DATABASE_URL_TEST:?run make db-roles P=01 TARGET=test first}
+  a2a:
+    environment:
+      MEMORY_DATABASE_URL: ${MEMORY_DATABASE_URL_TEST:?run make db-roles P=01 TARGET=test first}

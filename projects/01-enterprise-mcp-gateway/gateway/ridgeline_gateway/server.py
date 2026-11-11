@@ -610,10 +610,17 @@ async def audit_report(request: Request) -> JSONResponse:
         return JSONResponse({"error": "the audit store is unavailable"}, status_code=503)
 
 
+# Which database the audit log is in, as the database itself says (db/stamp.sql), read at startup:
+# main | test | local | unknown. The wire tests read it from /healthz and refuse to run against main.
+_database_environment = "unknown"
+
+
 @mcp.custom_route("/healthz", methods=["GET"])
 async def healthz(_: Request) -> JSONResponse:
-    """Liveness for Docker's healthcheck. Unauthenticated by design; reveals no data or configuration."""
-    return JSONResponse({"status": "ok", "server": SERVER_NAME, "version": SERVER_VERSION})
+    """Liveness for Docker's healthcheck. Unauthenticated by design; reveals no data, and of the
+    configuration only the database's environment label (no host, name or credentials)."""
+    return JSONResponse({"status": "ok", "server": SERVER_NAME, "version": SERVER_VERSION,
+                         "database": _database_environment})
 
 
 def transport_security() -> TransportSecuritySettings:
@@ -651,11 +658,21 @@ async def close_orphaned_approvals(audit: AuditSink) -> list[str]:
     return closed
 
 
-async def _close_orphans_once(config: AuditConfig) -> None:
+async def read_environment(audit: AuditSink) -> str:
+    """The database's environment stamp, or "unknown" (never stamped, or unreadable: logged, not fatal)."""
+    try:
+        return await audit.environment() or "unknown"
+    except AuditUnavailable as exc:
+        log.warning(json.dumps({"event": "database_environment_unknown", "reason": str(exc)}))
+        return "unknown"
+
+
+async def _startup_checks(config: AuditConfig) -> str:
     # Its own short-lived connection: the server's pool is created later, on the server's event loop.
     sink = PostgresAudit(config)
     try:
         await close_orphaned_approvals(sink)
+        return await read_environment(sink)
     finally:
         await sink.aclose()
 
@@ -687,7 +704,8 @@ def main() -> None:
     mcp.enable_auth(auth, build_verifier(auth, settings.http_timeout_s))
     set_policy(build_policy(policy))
     set_connectors(build_connectors(settings))
-    asyncio.run(_close_orphans_once(audit_config))
+    global _database_environment
+    _database_environment = asyncio.run(_startup_checks(audit_config))
     audit = PostgresAudit(audit_config)
     set_audit(audit)
     set_approver(build_approver(approval_config, audit, settings.http_timeout_s))
@@ -695,7 +713,8 @@ def main() -> None:
     log.info(json.dumps({"event": "startup", "version": SERVER_VERSION, "backends": settings.backends(),
                          "auth": {"issuer": auth.issuer, "audience": auth.audience},
                          "policy": {"engine": "opa", "timeout_s": policy.timeout_s},
-                         "audit": {"store": "postgres", "source": audit_config.source, "host": audit_config.host},
+                         "audit": {"store": "postgres", "source": audit_config.source, "host": audit_config.host,
+                                   "environment": _database_environment},
                          "approvals": {"engine": "n8n", "timeout_s": approval_config.timeout_s},
                          "rate_limit": {"per_minute": rate_config.per_minute,
                                         "overrides": len(rate_config.overrides)}}))

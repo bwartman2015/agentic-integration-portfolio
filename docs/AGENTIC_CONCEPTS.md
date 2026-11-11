@@ -51,8 +51,8 @@ Projects: **01** Enterprise MCP Tool Gateway + Customer Service Copilot · **02*
 - **02**: agent-core loop with progress files per order, so an aged exception shows exactly where triage stopped.
 - **03**: Progress files per shipment; compaction for long multi-day exceptions.
 - **04**: Deterministic matching engines are tools (action); agents add judgment and explanation; progress files make every proposal auditable.
-- **05**: Showcase: a long-running loop with compaction, progress files per incident, and Claude Code headless as an action for code fixes.
-- **06**: Showcase: Claude Code headless is the THINK provider inside CI, with persistence via git commits (separate `ai-generated` commit) and progress files.
+- **05**: Showcase: a long-running loop with compaction, progress files per incident, and a headless coding agent as an action for code fixes.
+- **06**: Showcase: A headless coding agent is the THINK provider inside CI, with persistence via git commits (separate `ai-generated` commit) and progress files.
 - **07**: Correlation id flows from agent trace -> MCP -> API-M -> CPI and back into the answer.
 - **08**: Case progress file persisted after every delegation; the case can be resumed.
 ### Evals

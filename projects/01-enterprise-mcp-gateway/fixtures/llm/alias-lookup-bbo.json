@@ -1,0 +1,26 @@
+{
+  "description": "Eval: an account alias (BBO) is resolved by search, then the open invoices are read.",
+  "responses": [
+    {
+      "type": "tool",
+      "tool": "search_accounts",
+      "args": {
+        "query": "BBO"
+      },
+      "reasoning": "BBO is an alias; resolve the account."
+    },
+    {
+      "type": "tool",
+      "tool": "get_open_invoices",
+      "args": {
+        "account_id": "ACCT-1001"
+      },
+      "reasoning": "Read its open invoices."
+    },
+    {
+      "type": "answer",
+      "reasoning": "One open invoice; the total comes from the tool.",
+      "answer": "BBO is Big Box Outdoor (ACCT-1001). It has one open invoice, INV-90412, for $20,000.00."
+    }
+  ]
+}

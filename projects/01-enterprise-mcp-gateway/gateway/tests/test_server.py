@@ -252,6 +252,7 @@ class HttpTransportTests(unittest.TestCase):
             resp = http.get("/healthz")
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json()["status"], "ok")
+        self.assertIn(resp.json()["database"], ("main", "test", "local", "unknown"))   # a label, never a host
 
     def test_foreign_host_header_is_421(self):
         for host in ("attacker.example", "localhost.attacker.example:8765", "localhost"):

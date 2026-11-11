@@ -27,7 +27,7 @@ sys.path.insert(0, str(ROOT / "agent-core"))
 from agentcore.skills import parse_skill  # noqa: E402
 LAYER_MODULES = ["perceive", "state", "reason", "memory", "knowledge", "plan", "tools", "guardrails", "observe", "verify", "build"]
 LLM_SDKS = {"anthropic", "openai", "ollama", "litellm", "langchain_openai", "langchain_anthropic"}
-LLM_PROVIDERS = {"AnthropicLLM", "OllamaLLM", "ClaudeCodeHeadlessLLM"}
+LLM_PROVIDERS = {"AnthropicLLM", "OllamaLLM", "HeadlessCodingAgentLLM"}
 AGENT_KWARGS = {"perceiver", "tools", "guardrails", "verifier"}            # passed explicitly
 COMMON_KWARGS = {"reasoner", "memory", "planner", "state", "retriever", "skills", "checkpointer", "tracer"}  # via _common()
 

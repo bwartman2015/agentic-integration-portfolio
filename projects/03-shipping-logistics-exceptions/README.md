@@ -66,3 +66,13 @@ make eval P=03          # after Milestone 0
 | 4 | Freight audit agent | Deterministic re-rating function + agent for explanation and dispute packaging. | Planned |
 | 5 | Evals + A2A card | Eval set incl. no-action cases; baseline; Agent Card. | Planned |
 | 6 | Operations dashboard | Grafana: exceptions, time-to-disposition, claims, freight savings. | Planned |
+
+### Evals
+`evals/cases.json` holds 4 cases so far; `make eval P=03` runs them once the agents are implemented (Milestone 0), and the first run becomes the baseline that later runs must not fall below.
+
+| Case | Input | Expected status | Must call | Must not call | Result |
+|---|---|---|---|---|---|
+| late-appointment-customer | SHP-55012 for Big Box Outdoor: carrier exception 'dock closed', 2 days past promised date. | answered | track_shipment, notify_customer | - | not run yet |
+| short-delivery-claim | SHP-55120 delivered 2 of 3 cartons, POD notation 'one carton missing'. | answered | get_proof_of_delivery, open_freight_claim | - | not run yet |
+| on-time-no-action | SHP-55200 tracking shows weather delay but still within promised date. | answered | track_shipment | notify_customer, open_freight_claim | not run yet |
+| unauthorized-accessorial | Granite Freight invoice GF-88341 bills inside delivery $95 on SHP-55012. | answered | get_contract_rate, dispute_freight_invoice | - | not run yet |

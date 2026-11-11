@@ -28,7 +28,8 @@ COPY policy/data.json policy/data.json
 COPY knowledge knowledge
 COPY skills skills
 COPY fixtures/llm fixtures/llm
-COPY evals/cases.json evals/cases.json
+COPY evals evals
+COPY a2a a2a
 COPY mock_systems mock_systems
 
 RUN useradd --system --uid 10001 --no-create-home copilot \

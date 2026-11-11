@@ -20,4 +20,6 @@ CREATE ROLE gateway_audit LOGIN PASSWORD :'gw_pw';
 CREATE ROLE copilot_memory LOGIN PASSWORD :'mem_pw';
 \i /db/audit.sql
 \i /db/memory.sql
+\set environment local
+\i /db/stamp.sql
 SQL

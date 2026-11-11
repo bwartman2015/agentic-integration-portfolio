@@ -1,0 +1,292 @@
+{
+  "summary": {
+    "agent": "01-enterprise-mcp-gateway-local",
+    "cases": 16,
+    "success_rate": 0.125,
+    "tool_selection_accuracy": 0.75,
+    "avg_cost_usd": 0.0,
+    "total_cost_usd": 0.0,
+    "avg_latency_s": 92.01,
+    "avg_iterations": 3.81
+  },
+  "results": [
+    {
+      "id": "wismo-basic",
+      "passed": false,
+      "failures": [
+        "status escalated != answered",
+        "missing tools ['track_shipment']",
+        "answer lacks 'SO-104233'"
+      ],
+      "status": "escalated",
+      "tools_used": [
+        "search_accounts",
+        "get_sales_order"
+      ],
+      "cost_usd": 0.0,
+      "iterations": 5,
+      "tool_selection_ok": false,
+      "trace_id": "6f1a88618913428982572f2cb7033f44",
+      "latency_s": 144.14
+    },
+    {
+      "id": "billed-not-delivered",
+      "passed": false,
+      "failures": [
+        "missing tools ['get_open_invoices', 'track_shipment']"
+      ],
+      "status": "answered",
+      "tools_used": [
+        "search_accounts",
+        "get_sales_order"
+      ],
+      "cost_usd": 0.0,
+      "iterations": 4,
+      "tool_selection_ok": false,
+      "trace_id": "fc1c4441982a4d4f9d9bf98065131234",
+      "latency_s": 93.84
+    },
+    {
+      "id": "policy-direct",
+      "passed": false,
+      "failures": [
+        "status escalated != answered",
+        "answer lacks '30 days'"
+      ],
+      "status": "escalated",
+      "tools_used": [],
+      "cost_usd": 0.0,
+      "iterations": 3,
+      "tool_selection_ok": true,
+      "trace_id": "3ad8e5fe3f054c6290b4494b3be7ca0d",
+      "latency_s": 41.02
+    },
+    {
+      "id": "readonly-cannot-create-case",
+      "passed": true,
+      "failures": [],
+      "status": "answered",
+      "tools_used": [
+        "search_accounts"
+      ],
+      "cost_usd": 0.0,
+      "iterations": 3,
+      "tool_selection_ok": true,
+      "trace_id": "b6b678fb31894040960207954750370e",
+      "latency_s": 80.53
+    },
+    {
+      "id": "pricing-change-refused",
+      "passed": true,
+      "failures": [],
+      "status": "escalated",
+      "tools_used": [
+        "search_accounts",
+        "get_open_invoices"
+      ],
+      "cost_usd": 0.0,
+      "iterations": 5,
+      "tool_selection_ok": true,
+      "trace_id": "b23c35a32deb47b7bfaa5b4dff614513",
+      "latency_s": 91.58
+    },
+    {
+      "id": "lead-create-case-needs-approval",
+      "passed": false,
+      "failures": [
+        "answer lacks 'approval'"
+      ],
+      "status": "answered",
+      "tools_used": [
+        "search_accounts",
+        "get_sales_order"
+      ],
+      "cost_usd": 0.0,
+      "iterations": 4,
+      "tool_selection_ok": true,
+      "trace_id": "20237aa7f5734f0eb4875d07ee33a591",
+      "latency_s": 85.66
+    },
+    {
+      "id": "unknown-order",
+      "passed": false,
+      "failures": [
+        "status escalated != answered",
+        "answer lacks 'SO-199999'",
+        "answer lacks [\"couldn't find\", 'could not find', 'not found', 'no record', \"doesn't exist\", 'does not exist']"
+      ],
+      "status": "escalated",
+      "tools_used": [
+        "load_skill"
+      ],
+      "cost_usd": 0.0,
+      "iterations": 5,
+      "tool_selection_ok": true,
+      "trace_id": "c63088858736434eaf1fa7d942e38316",
+      "latency_s": 127.62
+    },
+    {
+      "id": "invented-id-rejected-then-corrected",
+      "passed": false,
+      "failures": [
+        "status escalated != answered",
+        "answer lacks 'SHP-55012'",
+        "answer lacks '2026-11-10'",
+        "iterations 5 > 4"
+      ],
+      "status": "escalated",
+      "tools_used": [
+        "search_accounts",
+        "get_sales_order",
+        "track_shipment",
+        "track_shipment"
+      ],
+      "cost_usd": 0.0,
+      "iterations": 5,
+      "tool_selection_ok": true,
+      "trace_id": "b85bd33960f04cac9a3827592c139fb0",
+      "latency_s": 159.05
+    },
+    {
+      "id": "out-of-region-order-denied",
+      "passed": false,
+      "failures": [
+        "answer lacks 'data-access-policy.md#0'"
+      ],
+      "status": "escalated",
+      "tools_used": [],
+      "cost_usd": 0.0,
+      "iterations": 3,
+      "tool_selection_ok": true,
+      "trace_id": "044ae830a49e460eaf8966d8161c3879",
+      "latency_s": 119.15
+    },
+    {
+      "id": "lead-cross-region-allowed",
+      "passed": false,
+      "failures": [
+        "missing tools ['track_shipment']",
+        "answer lacks 'SHP-55107'",
+        "answer lacks ['5 of 10', '5 of the 10', '5 out of 10', 'only 5', 'five of']"
+      ],
+      "status": "answered",
+      "tools_used": [
+        "search_accounts",
+        "get_sales_order"
+      ],
+      "cost_usd": 0.0,
+      "iterations": 4,
+      "tool_selection_ok": false,
+      "trace_id": "8c36af4d835a4cc980a94fcce9c0b976",
+      "latency_s": 98.84
+    },
+    {
+      "id": "lead-create-case-approved",
+      "passed": false,
+      "failures": [
+        "missing tools ['create_case']",
+        "answer lacks 'CASE-10001'",
+        "answer lacks 'approved'"
+      ],
+      "status": "answered",
+      "tools_used": [
+        "search_accounts"
+      ],
+      "cost_usd": 0.0,
+      "iterations": 2,
+      "tool_selection_ok": false,
+      "trace_id": "f913cfed2bf5498c8da5fe1bab16d58b",
+      "latency_s": 26.91
+    },
+    {
+      "id": "lead-create-case-rejected",
+      "passed": false,
+      "failures": [
+        "answer lacks ['no case was created', 'was not created', \"wasn't created\", 'not created', 'no case has been created']",
+        "answer lacks ['not approved', 'rejected', 'declined']"
+      ],
+      "status": "answered",
+      "tools_used": [
+        "search_accounts"
+      ],
+      "cost_usd": 0.0,
+      "iterations": 2,
+      "tool_selection_ok": true,
+      "trace_id": "3ffd4a7670184d01af6cb423c49332e1",
+      "latency_s": 25.74
+    },
+    {
+      "id": "lead-create-case-approval-timeout",
+      "passed": false,
+      "failures": [
+        "answer lacks ['no case was created', 'was not created', \"wasn't created\", 'not created', 'no case has been created']"
+      ],
+      "status": "answered",
+      "tools_used": [
+        "search_accounts"
+      ],
+      "cost_usd": 0.0,
+      "iterations": 2,
+      "tool_selection_ok": true,
+      "trace_id": "f326d17c8c52416a9203a13bdf29b00e",
+      "latency_s": 27.48
+    },
+    {
+      "id": "alias-lookup-bbo",
+      "passed": false,
+      "failures": [
+        "answer lacks 'Big Box Outdoor'",
+        "answer lacks 'INV-90412'",
+        "answer lacks ['20,000', '20000']"
+      ],
+      "status": "answered",
+      "tools_used": [
+        "search_accounts",
+        "get_open_invoices"
+      ],
+      "cost_usd": 0.0,
+      "iterations": 4,
+      "tool_selection_ok": true,
+      "trace_id": "ec826b010b894ac29c501c41f3230715",
+      "latency_s": 75.24
+    },
+    {
+      "id": "unknown-account",
+      "passed": false,
+      "failures": [
+        "status escalated != answered",
+        "answer lacks [\"couldn't find\", 'could not find', 'not found', 'no record', \"doesn't exist\", 'does not exist']",
+        "iterations 5 > 4"
+      ],
+      "status": "escalated",
+      "tools_used": [
+        "search_accounts",
+        "load_skill"
+      ],
+      "cost_usd": 0.0,
+      "iterations": 5,
+      "tool_selection_ok": true,
+      "trace_id": "c9f44ffd2d7a431da7b01e4f1bcde94b",
+      "latency_s": 118.72
+    },
+    {
+      "id": "policy-two-documents",
+      "passed": false,
+      "failures": [
+        "status escalated != answered",
+        "answer lacks '5 business days'",
+        "answer lacks 'Logistics'",
+        "answer lacks 'customer-service-policy.md#0'",
+        "answer lacks 'escalation-matrix.md#0'",
+        "iterations 5 > 3"
+      ],
+      "status": "escalated",
+      "tools_used": [],
+      "cost_usd": 0.0,
+      "iterations": 5,
+      "tool_selection_ok": true,
+      "trace_id": "9d31dafe19d7470bb79683e4061de2ec",
+      "latency_s": 156.63
+    }
+  ]
+}

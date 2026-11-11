@@ -17,7 +17,7 @@ import urllib.request
 import uuid
 from dataclasses import asdict, dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any
+from typing import Any, Callable
 
 from .act import Tool
 from .types import Principal
@@ -65,10 +65,22 @@ def _task(answer: str, state: str, trace_id: str, context_id: str | None) -> dic
             "metadata": {"trace_id": trace_id}}
 
 
-def serve_agent(agent: Any, card: AgentCard, principal: Principal, host: str = "127.0.0.1",
-                port: int = 0, bearer_token: str | None = None) -> ThreadingHTTPServer:
+# Per-request identity: given the bearer token (or None), return (agent, principal) to run the task as,
+# or None to refuse with 401. Lets a server verify a real identity token and act with the caller's own
+# rights instead of one fixed principal.
+Authenticator = Callable[[str | None], "tuple[Any, Principal] | None"]
+
+
+def serve_agent(agent: Any, card: AgentCard, principal: Principal | None = None, host: str = "127.0.0.1",
+                port: int = 0, bearer_token: str | None = None, authenticate: Authenticator | None = None,
+                public_url: str | None = None) -> ThreadingHTTPServer:
     """Expose an agentcore.Agent as an A2A-style endpoint. Returns a running server (daemon thread).
-    port=0 picks a free port; card.url is updated to the real address."""
+    port=0 picks a free port. card.url is set to `public_url`, else to the real local address.
+
+    Identity, one of: `authenticate` (per request: verify the caller's token, return the agent and
+    principal to run as, or None for 401); or a fixed `principal` with an optional static `bearer_token`."""
+    if authenticate is None and principal is None:
+        raise ValueError("serve_agent needs a principal or an authenticate function")
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *a):  # quiet
@@ -90,9 +102,24 @@ def serve_agent(agent: Any, card: AgentCard, principal: Principal, host: str = "
         def do_POST(self):
             if self.path != RPC_PATH:
                 return self._send(404, {"error": "not found"})
-            if bearer_token and self.headers.get("Authorization") != f"Bearer {bearer_token}":
-                return self._send(401, {"error": "unauthorized"})
-            req = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+            header = self.headers.get("Authorization") or ""
+            token = header[7:].strip() if header.startswith("Bearer ") else None
+            if authenticate is not None:
+                try:
+                    who = authenticate(token)
+                except Exception:  # noqa: BLE001  any verification failure is a refusal
+                    who = None
+                if who is None:
+                    return self._send(401, {"error": "unauthorized"})
+                run_agent, run_principal = who
+            else:
+                if bearer_token and header != f"Bearer {bearer_token}":
+                    return self._send(401, {"error": "unauthorized"})
+                run_agent, run_principal = agent, principal
+            try:
+                req = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+            except ValueError:
+                return self._send(400, {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "parse error"}})
             rid = req.get("id")
             if req.get("method") != "message/send":
                 return self._send(200, {"jsonrpc": "2.0", "id": rid,
@@ -102,13 +129,17 @@ def serve_agent(agent: Any, card: AgentCard, principal: Principal, host: str = "
             if not text:
                 return self._send(200, {"jsonrpc": "2.0", "id": rid,
                                         "error": {"code": -32602, "message": "no text part"}})
-            out = agent.run(text, principal)
+            try:
+                out = run_agent.run(text, run_principal)
+            except Exception:  # noqa: BLE001  details stay server-side
+                return self._send(200, {"jsonrpc": "2.0", "id": rid,
+                                        "error": {"code": -32603, "message": "internal error"}})
             state = {"answered": "completed", "escalated": "input-required", "rejected": "rejected"}[out.status]
             self._send(200, {"jsonrpc": "2.0", "id": rid,
                              "result": _task(out.answer, state, out.trace_id, msg.get("contextId"))})
 
     server = ThreadingHTTPServer((host, port), Handler)
-    card.url = f"http://{host}:{server.server_address[1]}"
+    card.url = public_url or f"http://{host}:{server.server_address[1]}"
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server
 

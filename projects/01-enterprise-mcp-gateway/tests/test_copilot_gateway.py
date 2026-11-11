@@ -504,6 +504,17 @@ class DbRolesEnvTests(unittest.TestCase):
                                'MEMORY_DATABASE_URL="mem"'])
         self.assertEqual(roles.read_env_value(['X="a=b"'], "X"), "a=b")
 
+    def test_test_target_refuses_a_main_database_endpoint(self):
+        main = "postgresql://o:p@ep-main-123-pooler.c-1.db.example/neondb?sslmode=require"
+        direct = "postgresql://o:p@ep-main-123.c-1.db.example/neondb?sslmode=require"
+        test = "postgresql://o:p@ep-test-456.c-1.db.example/neondb?sslmode=require"
+        lines = [f"DATABASE_URL={main}"]
+        self.assertIsInstance(roles.target_plan(lines + [f"DATABASE_ADMIN_URL_TEST={test}"], "test"), tuple)
+        refused = roles.target_plan(lines + [f"DATABASE_ADMIN_URL_TEST={direct}"], "test")     # pooled vs direct
+        self.assertIsInstance(refused, str)
+        self.assertIn("same database", refused)
+        self.assertIn("TARGET", roles.target_plan(lines, "prod"))
+
     def test_role_sql_never_contains_a_password(self):
         self.assertNotIn(SECRET, roles.SQL)
         self.assertIn("\\getenv pw_copilot_memory NEW_COPILOT_MEMORY_PASSWORD", roles.SQL)

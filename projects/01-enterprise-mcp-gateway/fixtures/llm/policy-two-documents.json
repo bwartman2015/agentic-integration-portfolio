@@ -1,0 +1,10 @@
+{
+  "description": "Eval: a policy question answered from two cited documents, no tools.",
+  "responses": [
+    {
+      "type": "answer",
+      "reasoning": "Both answers are in the retrieved policy documents.",
+      "answer": "LTL freight is delivered within 5 business days of the ship date [customer-service-policy.md#0]. A shipment more than 2 business days late must be reported to Logistics and the account rep [escalation-matrix.md#0]."
+    }
+  ]
+}

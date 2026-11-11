@@ -1,0 +1,11 @@
+# `make up P=01 DB=local`: the stack on the local Postgres container, whatever .env says about Neon.
+services:
+  gateway:
+    environment:
+      DATABASE_URL: ""
+  copilot:
+    environment:
+      MEMORY_DATABASE_URL: ""
+  a2a:
+    environment:
+      MEMORY_DATABASE_URL: ""

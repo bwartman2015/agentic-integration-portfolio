@@ -18,7 +18,7 @@ from cs_copilot.agent.build import build_cs_copilot, principal_for_role
 from cs_copilot.agent.guardrails import get_guardrails
 from cs_copilot.agent.knowledge import known_citations
 from cs_copilot.agent.perceive import CaseRequestPerceiver
-from cs_copilot.agent.reason import scripted_approval, scripted_llm
+from cs_copilot.agent.reason import scripted_llm
 from cs_copilot.agent.state import CurrentStateProvider
 from cs_copilot.agent.verify import EvidenceBackedAnswerVerifier
 from mock_systems import build_dataset, get_systems, reset_systems
@@ -275,7 +275,7 @@ class EvalTests(unittest.TestCase):
     def test_all_starter_cases_pass_with_scripted_llm(self):
         def agent_for(case):
             reset_systems()
-            G.set_approver(G.scripted_approver(scripted_approval(case.id)))
+            G.set_approver(G.scripted_approver(case.approval))
             agent, _ = traced(scripted_llm(case.id))
             return agent
         self.addCleanup(G.set_approver, None)

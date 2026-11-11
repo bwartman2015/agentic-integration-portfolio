@@ -5,6 +5,8 @@ import json
 import pathlib
 import pickle
 import tempfile
+import time
+import urllib.error
 import unittest
 
 from agentcore import (A2AClient, Agent, AgentCard, AgentSkill, Checkpointer, EvalCase, FakeLLM,
@@ -194,6 +196,78 @@ class OrchestrationTests(unittest.TestCase):
         out = mgr.run("why is Acme on credit hold?", Principal("ops-lead", frozenset({"delegate.finance"})))
         self.assertEqual(out.tools_used, ["ask_finance"])
         self.assertTrue(any(s.name == "act.ask_finance" for s in sink.spans))
+
+
+class EvalMetricsTests(unittest.TestCase):
+    def test_latency_and_total_cost_are_reported_and_approval_is_a_case_field(self):
+        case = EvalCase(id="c1", input="hi", approval="approve")
+        self.assertEqual(case.approval, "approve")
+
+        class Slow:
+            def run(self, raw, principal):
+                time.sleep(0.05)
+                from agentcore.types import Outcome
+                return Outcome("answered", "hi", 1, 0, 0.002, "t")
+        report = run_evals(lambda c: Slow(), [case, EvalCase(id="c2", input="x")], agent_name="t")
+        s = report.summary()
+        self.assertGreaterEqual(s["avg_latency_s"], 0.05)
+        self.assertEqual(s["total_cost_usd"], 0.004)
+        self.assertIn("Latency", report.to_markdown())
+
+    def test_an_expected_fragment_may_list_alternative_phrasings(self):
+        class Says:
+            def __init__(self, text):
+                self.text = text
+
+            def run(self, raw, principal):
+                from agentcore.types import Outcome
+                return Outcome("answered", self.text, 1, 0, 0.0, "t")
+        case = EvalCase(id="c", input="x", expect_answer_contains=["SO-1", ["not found", "couldn't find"]])
+        self.assertTrue(run_evals(lambda c: Says("SO-1 was not found"), [case]).results[0].passed)
+        self.assertTrue(run_evals(lambda c: Says("I couldn't find SO-1"), [case]).results[0].passed)
+        failed = run_evals(lambda c: Says("SO-1 shipped"), [case]).results[0]
+        self.assertFalse(failed.passed)
+        self.assertIn("not found", failed.failures[0])
+
+
+class A2AAuthTests(unittest.TestCase):
+    def test_per_request_authentication_runs_as_the_verified_caller(self):
+        seen = []
+
+        class Echo:
+            def __init__(self, who):
+                self.who = who
+
+            def run(self, raw, principal):
+                seen.append(principal.id)
+                from agentcore.types import Outcome
+                return Outcome("answered", f"{principal.id}: {raw}", 1, 0, 0.0, "trace-1")
+
+        def authenticate(token):
+            if token == "rep-token":
+                return Echo("rep"), Principal("cs-rep", frozenset({"crm.read"}))
+            return None
+
+        card = AgentCard("echo", "echoes", url="")
+        server = serve_agent(None, card, authenticate=authenticate, public_url="http://localhost:8770")
+        try:
+            self.assertEqual(card.url, "http://localhost:8770")
+            base = f"http://127.0.0.1:{server.server_address[1]}"
+            task = A2AClient(base, bearer_token="rep-token").send("hello")
+            self.assertEqual(task["status"]["state"], "completed")
+            self.assertEqual(task["metadata"]["trace_id"], "trace-1")
+            self.assertEqual(seen, ["cs-rep"])
+            for token in (None, "wrong"):
+                with self.assertRaises(urllib.error.HTTPError) as ctx:
+                    A2AClient(base, bearer_token=token).send("x")
+                self.assertEqual(ctx.exception.code, 401)
+            self.assertEqual(A2AClient(base).card().name, "echo")              # the card is public
+        finally:
+            server.shutdown()
+
+    def test_a_server_needs_an_identity(self):
+        with self.assertRaises(ValueError):
+            serve_agent(None, AgentCard("x", "y", url=""))
 
 
 class A2ATests(unittest.TestCase):

@@ -7,7 +7,9 @@
 #   make audit P=01          the audit report (every call, allowed or denied, with its reason)
 #   make approvals P=01      write requests waiting for a human, with their approval links
 #   make ask P=01 Q="..."    ask the copilot (container, profile "copilot"): tools through the gateway,
-#                            long-term memory in pgvector, embeddings from llama.cpp
+#                            long-term memory in pgvector, embeddings from llama.cpp [LLM=claude|local]
+#   make eval P=01 LLM=local  real-model evals (profile "eval"; offline backend, no database; free)
+#   make a2a-up P=01         the copilot's A2A endpoint on 127.0.0.1:8701 (profile "a2a")
 #   make down P=01           stop
 # Each container gets only the variables it needs (no env_file): Salesforce/SAP secrets reach the gateway
 # only, and each mock API only its own shared secret. The mock APIs sit on an internal-only network (no
@@ -127,6 +129,7 @@ services:
       - ./db/init.sh:/docker-entrypoint-initdb.d/10-db.sh:ro
       - ./db/audit.sql:/db/audit.sql:ro
       - ./db/memory.sql:/db/memory.sql:ro
+      - ./db/stamp.sql:/db/stamp.sql:ro
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "postgres", "-d", "ridgeline"]
       interval: 5s
@@ -144,11 +147,12 @@ services:
     restart: "no"
 
   db-init:
-    # One-off (`make db-init P=01`; `make db-roles P=01` runs its SQL in this container too): applies
-    # db/audit.sql and db/memory.sql to a hosted database (Neon). Uses DATABASE_ADMIN_URL, else
-    # DATABASE_URL_UNPOOLED (Neon's direct URL), else DATABASE_URL. Only this container ever sees the
-    # admin URL; the gateway and the copilot do not. Not started by `make up` (profile "admin"). The local
-    # `db` applies the same files on its own.
+    # One-off (`make db-init P=01 [TARGET=test]`; `make db-roles` runs its SQL in this container too):
+    # applies db/audit.sql and db/memory.sql to a hosted database (Neon) and stamps it with its
+    # environment (db/stamp.sql). main: DATABASE_ADMIN_URL, else DATABASE_URL_UNPOOLED (Neon's direct
+    # URL), else DATABASE_URL. test: DATABASE_ADMIN_URL_TEST (the Neon `test` branch's owner URL). Only
+    # this container ever sees an admin URL; the gateway and the copilot do not. Not started by `make up`
+    # (profile "admin"). The local `db` applies the same files on its own and is stamped `local`.
     image: pgvector/pgvector:pg17@sha256:7d0a41464797aeb9862dfdc0bbf1526b82cfd324cdd8036df19e3545f4a9ccb8
     profiles: ["admin"]
     user: postgres
@@ -156,18 +160,31 @@ services:
     entrypoint: ["sh", "-c"]
     command:
       - >-
-        url="$${DATABASE_ADMIN_URL:-$${DATABASE_URL_UNPOOLED:-$$DATABASE_URL}}";
-        [ -n "$$url" ] || { echo "set DATABASE_ADMIN_URL (or DATABASE_URL) in .env first" >&2; exit 2; };
+        case "$$DB_TARGET" in
+          main) url="$${DATABASE_ADMIN_URL:-$${DATABASE_URL_UNPOOLED:-$$DATABASE_URL}}" ;;
+          test) url="$$DATABASE_ADMIN_URL_TEST";
+                ep() { printf '%s' "$$1" | sed -E 's#^[a-z]+://([^@/]*@)?([^/:?]+).*#\2#' | sed -E 's#^([^.]*)-pooler\.#\1.#' | tr 'A-Z' 'a-z'; };
+                t="$$(ep "$$url")";
+                for m in "$$DATABASE_ADMIN_URL" "$$DATABASE_URL_UNPOOLED" "$$DATABASE_URL"; do
+                  [ -n "$$m" ] && [ "$$(ep "$$m")" = "$$t" ] && { echo "DATABASE_ADMIN_URL_TEST points at the main database; refusing" >&2; exit 2; };
+                done ;;
+          *) echo "DB_TARGET must be main or test" >&2; exit 2 ;;
+        esac;
+        [ -n "$$url" ] || { echo "set DATABASE_ADMIN_URL (main) or DATABASE_ADMIN_URL_TEST (test) in .env first" >&2; exit 2; };
         psql "$$url" -v ON_ERROR_STOP=1 --quiet -f /db/audit.sql -f /db/memory.sql &&
-        echo "audit and memory schemas are in place"
+        psql "$$url" -v ON_ERROR_STOP=1 --quiet -v environment="$$DB_TARGET" -f /db/stamp.sql &&
+        echo "audit and memory schemas are in place; database stamped as $$DB_TARGET"
     environment:
       DATABASE_ADMIN_URL: ${DATABASE_ADMIN_URL:-}
       DATABASE_URL_UNPOOLED: ${DATABASE_URL_UNPOOLED:-}   # direct connection, preferred for schema changes
       DATABASE_URL: ${DATABASE_URL:-}
+      DATABASE_ADMIN_URL_TEST: ${DATABASE_ADMIN_URL_TEST:-}
+      DB_TARGET: ${DB_TARGET:-main}
       PSQL_HISTORY: /dev/null
     volumes:
       - ./db/audit.sql:/db/audit.sql:ro
       - ./db/memory.sql:/db/memory.sql:ro
+      - ./db/stamp.sql:/db/stamp.sql:ro
     read_only: true
     tmpfs:
       - /tmp
@@ -389,18 +406,25 @@ services:
       target: runtime
       additional_contexts:
         agentcore: ../../agent-core
-    image: ridgeline/cs-copilot:0.6.0
+    image: ridgeline/cs-copilot:0.7.0
     pull_policy: never               # local build only: `make ask` and `make models` build it first
     profiles: ["copilot"]
-    networks: [edge, data, embeddings]
+    networks: [edge, data, embeddings, llm]
     environment:
       GATEWAY_URL: http://gateway:8000/mcp
       OIDC_TOKEN_URL: http://keycloak:8080/realms/ridgeline/protocol/openid-connect/token
       CS_REP_CLIENT_SECRET: ${CS_REP_CLIENT_SECRET:?run make up P=01 to generate .env}
       CS_LEAD_CLIENT_SECRET: ${CS_LEAD_CLIENT_SECRET:?run make up P=01 to generate .env}
       APPROVAL_TIMEOUT_S: ${APPROVAL_TIMEOUT_S:-120}
-      # The model: scripted plans until Milestone 7 chooses a local chat model.
       LLM_PROVIDER: ${COPILOT_LLM_PROVIDER:-scripted}
+      # The model (Milestone 7): scripted (default) | anthropic (Claude) | local (Qwen2.5-1.5B on llama.cpp).
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}
+      ANTHROPIC_PRICE_IN_PER_MTOK: ${ANTHROPIC_PRICE_IN_PER_MTOK:-}
+      ANTHROPIC_PRICE_OUT_PER_MTOK: ${ANTHROPIC_PRICE_OUT_PER_MTOK:-}
+      ANTHROPIC_EFFORT: ${ANTHROPIC_EFFORT:-medium}
+      LOCAL_LLM_URL: http://llm:8080
+      A2A_URL: http://a2a:8701          # make a2a-check
       MEMORY_BACKEND: pgvector
       MEMORY_DATABASE_URL: ${MEMORY_DATABASE_URL:-}
       MEMORY_DB_HOST: db
@@ -423,7 +447,7 @@ services:
     # nomic-embed-text-v1.5 (768 dimensions) from the `models` volume (`make models P=01` fills it,
     # checksum-verified). Internal network shared with the copilot only; no internet, not published.
     image: ghcr.io/ggml-org/llama.cpp:server-b12282@sha256:086942d6ac097c894d9d5bbaf8085c53af85e113fbb9d6d61b3748863c86aa5f
-    profiles: ["copilot"]
+    profiles: ["copilot", "a2a"]
     command: ["-m", "/models/nomic-embed-text-v1.5.Q8_0.gguf", "--embedding", "--pooling", "mean",
               "-c", "2048", "-b", "2048", "-ub", "2048", "--threads", "2", "--host", "0.0.0.0", "--port", "8080"]
     networks: [embeddings]
@@ -448,9 +472,9 @@ services:
     restart: "no"
 
   models:
-    # One-off (`make models P=01`): downloads the embedding model into the `models` volume and verifies
-    # its SHA-256 (copilot/fetch_model.py). Same image as the copilot. Profile "admin".
-    image: ridgeline/cs-copilot:0.6.0
+    # One-off (`make models P=01 [MODEL=chat]`): downloads the embedding (or chat) model into the `models`
+    # volume and verifies its SHA-256 (copilot/fetch_model.py). Same image as the copilot. Profile "admin".
+    image: ridgeline/cs-copilot:0.7.0
     pull_policy: never
     profiles: ["admin"]
     entrypoint: ["python", "copilot/fetch_model.py"]
@@ -465,6 +489,117 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  llm:
+    # The free local model (Milestone 7): Qwen2.5-1.5B-Instruct Q4_K_M on the same digest-pinned llama.cpp
+    # server as `embeddings`, CPU only. Two threads (a laptop's physical cores beat its hyperthreads here)
+    # and two slots, so the planner's and the reasoner's prompt prefixes both stay cached. `make models P=01 MODEL=chat` downloads
+    # it (SHA-256 pinned). Internal network shared with the copilot containers only. Profile "local-llm".
+    image: ghcr.io/ggml-org/llama.cpp:server-b12282@sha256:086942d6ac097c894d9d5bbaf8085c53af85e113fbb9d6d61b3748863c86aa5f
+    profiles: ["local-llm"]
+    command: ["-m", "/models/qwen2.5-1.5b-instruct-q4_k_m.gguf", "-c", "16384", "-np", "2", "--threads", "2",
+              "--host", "0.0.0.0", "--port", "8080"]
+    networks: [llm]
+    mem_limit: 2g
+    expose:
+      - "8080"
+    volumes:
+      - models:/models:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 3s
+      timeout: 3s
+      retries: 60
+      start_period: 5s
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+
+  eval:
+    # Real-model evals (Milestone 7): `make eval P=01 LLM=claude|local`. Same cases as the scripted run,
+    # on the offline backend (in-process tools over the seeded mock systems, in-memory memory): this
+    # container gets no gateway, database or Neon settings at all. Writes reports and baselines to
+    # ./evals. Profile "eval".
+    image: ridgeline/cs-copilot:0.7.0
+    pull_policy: never
+    profiles: ["eval"]
+    entrypoint: ["python", "evals/run_evals.py"]
+    networks: [eval-egress, llm]   # llm: the local model; eval-egress: internet only (the optional hosted model)
+    environment:
+      LLM_PROVIDER: ${EVAL_LLM_PROVIDER:-scripted}
+      # The model (Milestone 7): scripted (default) | anthropic (Claude) | local (Qwen2.5-1.5B on llama.cpp).
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}
+      ANTHROPIC_PRICE_IN_PER_MTOK: ${ANTHROPIC_PRICE_IN_PER_MTOK:-}
+      ANTHROPIC_PRICE_OUT_PER_MTOK: ${ANTHROPIC_PRICE_OUT_PER_MTOK:-}
+      ANTHROPIC_EFFORT: ${ANTHROPIC_EFFORT:-medium}
+      LOCAL_LLM_URL: http://llm:8080
+      EVAL_MAX_COST_PER_CASE: ${EVAL_MAX_COST_PER_CASE:-0.25}
+      TRACE_FILE: /tmp/traces.jsonl
+    volumes:
+      - ./evals:/app/evals
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  a2a:
+    # The copilot's A2A endpoint (Milestone 7): Agent Card at /.well-known/agent-card.json and
+    # message/send on 127.0.0.1:${A2A_PORT:-8701}. Keycloak token passthrough: it verifies the caller's
+    # token (like the gateway) and acts with it, so it holds no client secret of its own. Profile "a2a".
+    image: ridgeline/cs-copilot:0.7.0
+    pull_policy: never
+    profiles: ["a2a"]
+    entrypoint: ["python", "-m", "cs_copilot.a2a_server"]
+    networks: [edge, data, embeddings, llm]
+    ports:
+      - "127.0.0.1:${A2A_PORT:-8701}:8701"
+    environment:
+      GATEWAY_URL: http://gateway:8000/mcp
+      OIDC_ISSUER: http://localhost:${KEYCLOAK_PORT:-8080}/realms/ridgeline
+      OIDC_JWKS_URL: http://keycloak:8080/realms/ridgeline/protocol/openid-connect/certs
+      OIDC_AUDIENCE: ridgeline-gateway
+      A2A_PUBLIC_URL: http://localhost:${A2A_PORT:-8701}
+      APPROVAL_TIMEOUT_S: ${APPROVAL_TIMEOUT_S:-120}
+      LLM_PROVIDER: ${COPILOT_LLM_PROVIDER:-scripted}
+      # The model (Milestone 7): scripted (default) | anthropic (Claude) | local (Qwen2.5-1.5B on llama.cpp).
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}
+      ANTHROPIC_PRICE_IN_PER_MTOK: ${ANTHROPIC_PRICE_IN_PER_MTOK:-}
+      ANTHROPIC_PRICE_OUT_PER_MTOK: ${ANTHROPIC_PRICE_OUT_PER_MTOK:-}
+      ANTHROPIC_EFFORT: ${ANTHROPIC_EFFORT:-medium}
+      LOCAL_LLM_URL: http://llm:8080
+      MEMORY_BACKEND: pgvector
+      MEMORY_DATABASE_URL: ${MEMORY_DATABASE_URL:-}
+      MEMORY_DB_HOST: db
+      MEMORY_DB_NAME: ridgeline
+      COPILOT_MEMORY_DB_PASSWORD: ${COPILOT_MEMORY_DB_PASSWORD:?run make up P=01 to generate .env}
+      EMBEDDINGS_URL: http://embeddings:8080
+    depends_on:
+      embeddings:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8701/.well-known/agent-card.json', timeout=2).status == 200 else 1)"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 3s
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+
 networks:
   edge: {}
   backend:
@@ -474,12 +609,15 @@ networks:
   data:
     internal: true    # Postgres: the gateway (audit) and the copilot (memory)
   embeddings:
-    internal: true    # copilot <-> embedding server only
+    internal: true    # copilot containers <-> embedding server only
+  llm:
+    internal: true    # copilot containers <-> local chat model only
+  eval-egress: {}     # the eval container alone: no other service joins it
   approvals:
     internal: true    # gateway <-> n8n only (approval requests and callbacks)
   n8n-public: {}      # publishes the approval form on 127.0.0.1; no other service joins it
 
 volumes:
   db-data: {}         # audit log and memory survive `make down`; `docker volume rm ridgeline-p01_db-data` resets them
-  models: {}          # the embedding model (make models P=01)
+  models: {}          # the embedding and chat models (make models P=01 [MODEL=chat])
   n8n-data: {}        # n8n's own database (owner account, encrypted credential, pruned execution history)

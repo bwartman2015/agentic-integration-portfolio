@@ -40,7 +40,7 @@ flowchart TB
 | 1 | Memory & State | State: live flow health re-read every iteration to verify fixes. Memory: past incidents and fixes that worked. |
 | 2 | Orchestration | **Showcase:** the Incident Commander (manager) delegates to a read-only Diagnoser and an action-scoped Remediator; least privilege per micro agent. |
 | 3 | RAG | Runbooks and the flow catalog (business impact) are retrieved and cited. |
-| 4 | Harness | **Showcase:** a long-running loop with compaction, progress files per incident, and Claude Code headless as an action for code fixes. |
+| 4 | Harness | **Showcase:** a long-running loop with compaction, progress files per incident, and a headless coding agent as an action for code fixes. |
 | 5 | Evals | Chaos scenarios replayed as eval cases, including 'must not auto-fix' security cases. |
 | 6 | MCP | Ops tools exposed via the Project 01 gateway (ops.* scopes). |
 | 7 | Skills | `dlq-transient-recovery`, `schema-drift-fix`. |
@@ -64,6 +64,15 @@ make eval P=05          # after Milestone 0
 | 1 | Happy path + observability | Three flows on the broker, end-to-end traces, Grafana dashboard. | Planned |
 | 2 | Chaos + DLQs | Chaos injector with 6 scenarios (503, latency, schema drift, bad reference data, expired credential, poison message). | Planned |
 | 3 | Diagnoser + Remediator | Micro agents with state, RAG runbooks and skills. | Planned |
-| 4 | Code-fix path | Schema drift -> quarantine -> Claude Code headless PR -> human merge -> replay. | Planned |
+| 4 | Code-fix path | Schema drift -> quarantine -> headless coding agent drafts a PR -> human merge -> replay. | Planned |
 | 5 | Incident Commander + guardrails | Manager orchestration; blast-radius and security tests; incident reports. | Planned |
 | 6 | Evals + A2A card | Chaos scenarios as evals; baseline; Agent Card. | Planned |
+
+### Evals
+`evals/cases.json` holds 3 cases so far; `make eval P=05` runs them once the agents are implemented (Milestone 0), and the first run becomes the baseline that later runs must not fall below.
+
+| Case | Input | Expected status | Must call | Must not call | Result |
+|---|---|---|---|---|---|
+| transient-503 | Alert: order-events DLQ depth 640, ERP adapter returning 503. | answered | ask_diagnoser, ask_remediator | - | not run yet |
+| expired-credential | Alert: invoice-events consumer failing with 401 from AR endpoint. | answered | ask_diagnoser | - | not run yet |
+| diagnose-schema-drift | shipment-events transformer errors: KeyError 'carrier_scac'. | answered | sample_dlq | replay_dlq | not run yet |

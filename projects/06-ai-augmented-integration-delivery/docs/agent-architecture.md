@@ -36,7 +36,7 @@ flowchart TB
 | 1 | Memory & State | State: CI stage results for this PR. Memory: which AI tests and review findings humans accepted (learned patterns). |
 | 2 | Orchestration | The PR Orchestrator delegates to the test-generation and review micro agents; the Jenkins pipeline is the environment. |
 | 3 | RAG | API standards retrieved and cited in review comments. |
-| 4 | Harness | **Showcase:** Claude Code headless is the THINK provider inside CI, with persistence via git commits (separate `ai-generated` commit) and progress files. |
+| 4 | Harness | **Showcase:** A headless coding agent is the THINK provider inside CI, with persistence via git commits (separate `ai-generated` commit) and progress files. |
 | 5 | Evals | PR scenarios with expected tools, including 'do nothing' docs-only PRs. |
 | 6 | MCP | Optional: GitHub and Jenkins tools behind the Project 01 gateway. |
 | 7 | Skills | `integration-review-checklist`, `api-test-generation`. |

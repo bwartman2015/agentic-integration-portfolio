@@ -16,5 +16,8 @@
 !skills/
 !fixtures/llm/
 !evals/cases.json
+!evals/run_evals.py
+!evals/baseline*.json
+!a2a/
 **/__pycache__
 **/*.pyc

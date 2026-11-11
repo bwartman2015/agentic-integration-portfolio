@@ -1,6 +1,5 @@
 {
   "description": "Eval: a cs-lead asks for a case and the human approver approves, so the case is created.",
-  "approval": "approve",
   "responses": [
     {
       "type": "tool",

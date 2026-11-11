@@ -39,7 +39,7 @@ def quarantine(queue, message_ids):
 
 
 def open_fix_pr(service, evidence):
-    """Ask Claude Code (headless) to draft a fix + test and open a PR. TODO(M4)."""
+    """Ask a headless coding agent to draft a fix + test and open a PR. TODO(M4)."""
     raise NotImplementedError("open_fix_pr")
 
 
@@ -70,7 +70,7 @@ TOOLS = [
     Tool('quarantine', 'Move poison/unmappable messages to a quarantine queue', handler=quarantine,
          params={'queue': 'string', 'message_ids': 'array'}, required=['queue', 'message_ids'],
          scope='ops.remediate', side_effect='write', category='api'),
-    Tool('open_fix_pr', 'Ask Claude Code (headless) to draft a fix + test and open a PR', handler=open_fix_pr,
+    Tool('open_fix_pr', 'Ask a headless coding agent to draft a fix + test and open a PR', handler=open_fix_pr,
          params={'service': 'string', 'evidence': 'string'}, required=['service', 'evidence'],
          scope='ops.code', side_effect='write', category='code'),
     Tool('notify_oncall', 'Page the on-call human with an incident summary', handler=notify_oncall,

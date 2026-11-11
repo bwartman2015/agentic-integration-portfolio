@@ -138,7 +138,13 @@ class AuditSink(Protocol):
 
     async def close_orphaned_approvals(self) -> list[str]: ...
 
+    async def environment(self) -> str | None: ...
+
     async def aclose(self) -> None: ...
+
+
+ENVIRONMENTS = frozenset({"main", "test", "local"})
+SELECT_ENVIRONMENT = "SELECT name FROM public.ridgeline_environment LIMIT 1"
 
 
 def _row(record: Mapping[str, Any]) -> dict[str, Any]:
@@ -178,6 +184,9 @@ class UnavailableAudit:
         raise AuditUnavailable("no audit store configured")
 
     async def close_orphaned_approvals(self) -> list[str]:
+        raise AuditUnavailable("no audit store configured")
+
+    async def environment(self) -> str | None:
         raise AuditUnavailable("no audit store configured")
 
     async def aclose(self) -> None:
@@ -225,6 +234,10 @@ class MemoryAudit:
         for rid in closed:
             self.approvals[rid].update(status="unavailable", decided_at=datetime.now(timezone.utc).isoformat())
         return closed
+
+    async def environment(self) -> str | None:
+        self._check()
+        return getattr(self, "stamp", None)
 
     async def aclose(self) -> None:
         return None
@@ -319,6 +332,17 @@ class PostgresAudit:
     async def close_orphaned_approvals(self) -> list[str]:
         rows = await self._run("fetch", CLOSE_ORPHANED)
         return sorted(r["request_id"] for r in rows)
+
+    async def environment(self) -> str | None:
+        """The environment the database was stamped with (db/stamp.sql): main, test or local. None when
+        it was never stamped; AuditUnavailable when the database cannot be read."""
+        try:
+            name = await self._run("fetchval", SELECT_ENVIRONMENT)
+        except AuditUnavailable as exc:
+            if "UndefinedTable" in str(exc):
+                return None
+            raise
+        return name if name in ENVIRONMENTS else None
 
     async def aclose(self) -> None:
         if self._pool is not None:

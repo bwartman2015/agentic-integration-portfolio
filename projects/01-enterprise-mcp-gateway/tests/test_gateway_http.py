@@ -2,7 +2,8 @@
 
 It speaks raw JSON-RPC over MCP streamable HTTP (initialize -> notifications/initialized -> tools/list
 -> tools/call), so it checks protocol compliance independently of the SDK the server is built with.
-Start the gateway first (`make up P=01`); otherwise these tests are skipped with the reason.
+Start the gateway first on a test database (`make up P=01 DB=test` for the Neon test branch, or
+`DB=local`); otherwise, or when its database is the Neon main branch, these tests are skipped with the reason.
 Set REQUIRE_GATEWAY=1 (CI) to turn that skip into a failure, so a run cannot pass by skipping.
 The URL comes from GATEWAY_URL, else http://localhost:${GATEWAY_PORT:-8765}. `make test` does not
 read .env, so export GATEWAY_PORT (and KEYCLOAK_PORT) if you changed them there.
@@ -90,12 +91,18 @@ def claims_of(token: str) -> dict[str, Any]:
     return json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
 
 
-def _gateway_up() -> bool:
+def _gateway_health() -> dict[str, Any] | None:
     try:
         with urllib.request.urlopen(f"{BASE}/healthz", timeout=1) as resp:
-            return resp.status == 200
-    except (OSError, urllib.error.URLError):
-        return False
+            return json.loads(resp.read()) if resp.status == 200 else None
+    except (OSError, ValueError, urllib.error.URLError):
+        return None
+
+
+# These tests write audit rows and approval records. They run only against a database stamped `test` or
+# `local` (db/stamp.sql; the gateway reports it in /healthz), never against the Neon `main` branch that
+# holds the demo runs. `make up P=01 DB=test` (Neon test branch) or `DB=local` gives such a stack.
+SAFE_DATABASES = ("test", "local")
 
 
 class McpHttpSession:
@@ -157,7 +164,13 @@ class McpHttpSession:
         return resp
 
 
-_UP = _gateway_up()
+_HEALTH = _gateway_health()
+_REACHABLE = _HEALTH is not None
+DATABASE = (_HEALTH or {}).get("database", "unknown")
+_UP = _REACHABLE and DATABASE in SAFE_DATABASES
+_SKIP = (f"gateway not running at {BASE} (start it with `make up P=01 DB=test` or `DB=local`)" if not _REACHABLE
+         else f"the gateway's database is `{DATABASE}`, not test or local: these tests write audit rows, so they "
+              f"never run against the main branch (restart with `make up P=01 DB=test` or `DB=local`)")
 
 
 def _live_crm_erp() -> bool:
@@ -187,10 +200,10 @@ class GatewayRequiredTest(unittest.TestCase):
     def test_gateway_reachable_when_required(self):
         if not REQUIRE_GATEWAY:
             self.skipTest("set REQUIRE_GATEWAY=1 to fail when the gateway is down")
-        self.assertTrue(_UP, f"REQUIRE_GATEWAY=1 but no gateway at {BASE}")
+        self.assertTrue(_UP, f"REQUIRE_GATEWAY=1: {_SKIP}")
 
 
-@unittest.skipUnless(_UP, f"gateway not running at {BASE} (start it with `make up P=01`)")
+@unittest.skipUnless(_UP, _SKIP)
 class GatewayHttpContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -282,7 +295,7 @@ class GatewayHttpContractTests(unittest.TestCase):
         self.assertEqual(self._rejected_status("Origin", "http://attacker.example"), 403)
 
 
-@unittest.skipUnless(_UP, f"gateway not running at {BASE} (start it with `make up P=01`)")
+@unittest.skipUnless(_UP, _SKIP)
 class GatewayIdentityTests(unittest.TestCase):
     """Milestone 3 acceptance: no token / expired token -> 401, against the real Keycloak and gateway."""
 
@@ -351,7 +364,7 @@ class GatewayIdentityTests(unittest.TestCase):
         self.assertEqual([a.rstrip("/") for a in meta["authorization_servers"]], [ISSUER])
 
 
-@unittest.skipUnless(_UP, f"gateway not running at {BASE} (start it with `make up P=01`)")
+@unittest.skipUnless(_UP, _SKIP)
 class GatewayAuthorizationTests(unittest.TestCase):
     """Milestone 4 acceptance: an unauthorized tool gets a clear MCP error, decided by the stack's OPA
     from the scopes and regions in real Keycloak tokens."""
@@ -429,7 +442,7 @@ class GatewayAuthorizationTests(unittest.TestCase):
         self.assertEqual([(m["account_id"], m["region"]) for m in summit["matches"]], [("ACCT-1002", "Central")])
 
 
-@unittest.skipUnless(_UP, f"gateway not running at {BASE} (start it with `make up P=01`)")
+@unittest.skipUnless(_UP, _SKIP)
 class GatewayGovernanceTests(unittest.TestCase):
     """Milestone 5 acceptance: every call, allowed or denied, is audited with the reason; a lead's
     create_case lands in n8n and runs only after approval. Real Keycloak, OPA, Postgres and n8n."""

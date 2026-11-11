@@ -66,3 +66,13 @@ make eval P=08          # after Milestone 0
 | 4 | Stitched tracing | Collect specialist trace ids from task metadata into one case timeline view. | Planned |
 | 5 | Evals | Cross-functional eval scenarios and baseline. | Planned |
 | 6 | A2A spec conformance | Verify against the current A2A specification; optionally adopt the official SDK. | Planned |
+
+### Evals
+`evals/cases.json` holds 4 cases so far; `make eval P=08` runs them once the agents are implemented (Milestone 0), and the first run becomes the baseline that later runs must not fall below.
+
+| Case | Input | Expected status | Must call | Must not call | Result |
+|---|---|---|---|---|---|
+| short-ship-deduction | Big Box Outdoor short-paid INV-90412 by $4,860, code SHORT. Resolve it. | answered | record_resolution | - | not run yet |
+| price-deduction | Pinecrest Hardware deducted $312 on INV-90388, code PRICE. | answered | record_resolution | - | not run yet |
+| asn-flow-failure | BBO fined us for an inaccurate ASN on PO-7722; was it our integration? | answered | - | - | not run yet |
+| cs-question-routes-to-cs-copilot | Summit Contractors says SO-104233 hasn't arrived and they were billed. What should we t... | answered | ask_cs_copilot | record_resolution | not run yet |

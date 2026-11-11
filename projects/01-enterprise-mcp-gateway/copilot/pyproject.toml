@@ -1,6 +1,6 @@
 [project]
 name = "ridgeline-cs-copilot"
-version = "0.6.0"
+version = "0.7.0"
 description = "Ridgeline Supply Co. customer service copilot container (fictional company, synthetic data)"
 requires-python = ">=3.11"
 # Top-level pins. The image installs the full hashed closure from requirements.lock
@@ -9,4 +9,7 @@ dependencies = [
     "mcp==2.3.0",  # official MCP Python SDK: the client side of the gateway (mcp_client.py); same pin as the gateway
     "httpx2==2.16.0",  # the HTTP client the SDK's streamable HTTP transport takes (Authorization, x-request-id)
     "asyncpg==0.32.0",  # Postgres driver for pgvector long-term memory (memory.py)
+    "anthropic==2.3.0",  # official Claude SDK: the anthropic provider in reason.py (Milestone 7)
+    "PyJWT==2.15.1",  # A2A server: verify the caller's Keycloak token (same pin as the gateway)
+    "cryptography==50.0.2",  # RS256 signature verification for PyJWT
 ]

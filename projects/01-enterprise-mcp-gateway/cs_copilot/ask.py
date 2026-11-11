@@ -1,13 +1,15 @@
-"""Ask the CS copilot a question, end to end: `make ask P=01 Q="..." [ROLE=cs-lead]` (from the repo root).
+"""Ask the CS copilot a question, end to end: `make ask P=01 Q="..." [ROLE=cs-lead] [LLM=claude|local]`.
 
 Runs in the copilot container. Tools and state go through the MCP gateway with the role's Keycloak token
 (so every call is authorized by OPA and audited with this run's trace id), and long-term memory is
 Postgres + pgvector. Printed: the answer with its citations, what memory recalled, the gateway calls, and
 the trace id to look the calls up with `make audit P=01 ARGS=--trace=<id>`.
 
-The model: until Milestone 7 picks a local chat model, LLM_PROVIDER=scripted replays the scripted plan
-for a known question (the demo question and the eval cases' questions; `--list` shows them). Everything
-else in the run is real: the gateway, its policy and approvals, the systems behind it, memory.
+The model: LLM=local (Qwen2.5-1.5B on llama.cpp, free) answers any question; so does the optional,
+paid LLM=claude (your own API key). Without LLM, the scripted model replays the plan for a known question (the demo question and the
+eval cases' questions; `--list` shows them). Everything else in the run is real either way: the gateway,
+its policy and approvals, the systems behind it, memory. With a real model the model's name and the run's
+cost are printed too.
 """
 from __future__ import annotations
 
@@ -69,20 +71,24 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     scripted = os.environ.get("LLM_PROVIDER", "scripted") == "scripted"
     if args.list or not args.question.strip():
-        print("Questions the scripted model knows (Milestone 7 adds a real model):")
+        print("Questions the scripted model knows (LLM=local answers any question):")
         for q in known_questions():
             print(f"  {q}")
         return 0 if args.list else 2
 
     script = script_for(args.question) if scripted else None
     if scripted and script is None:
-        print("The scripted model has no plan for that question (a real model comes in Milestone 7).\n"
+        print("The scripted model has no plan for that question; ask with LLM=local.\n"
               "Run `make ask P=01 Q=--list` to see the questions it knows.", file=sys.stderr)
         return 2
     try:
-        agent = build_cs_copilot(get_llm(script=script), role=args.role)
+        llm = get_llm(script=script)
+        agent = build_cs_copilot(llm, role=args.role)
     except TokenError as exc:
         print(f"could not get a token: {exc}", file=sys.stderr)
+        return 1
+    except ValueError as exc:
+        print(f"model settings: {exc}", file=sys.stderr)
         return 1
     except (OSError, RuntimeError) as exc:
         print(f"could not reach the gateway: {type(exc).__name__}: {exc}"[:400], file=sys.stderr)
@@ -92,6 +98,8 @@ def main(argv: list[str] | None = None) -> int:
     memory = agent.memory
     print(f"role={args.role}  status={out.status}  iterations={out.iterations}  tool_calls={out.tool_calls}"
           f"  tools={','.join(out.tools_used) or '-'}")
+    if not scripted:
+        print(f"model: {', '.join(sorted(getattr(llm, 'served_models', ()))) or '?'}  cost=${out.cost_usd:.4f}")
     print(f"memory: {type(memory).__name__} ({getattr(getattr(memory, 'embedder', None), 'model', 'keyword')})")
     recalled = getattr(memory, "last_recall", None) or []
     if recalled:

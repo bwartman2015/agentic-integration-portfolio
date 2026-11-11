@@ -121,6 +121,13 @@ class Reasoner:
         except (ValueError, json.JSONDecodeError) as e:
             return Decision(kind="escalate", reasoning=f"unparseable model output: {e}")
         kind = d.get("type")
+        if kind is None:
+            # Small models often drop the "type" field. Infer it only when the object is unambiguous:
+            # exactly one of a tool name or an answer.
+            if d.get("tool") and "answer" not in d:
+                kind = "tool"
+            elif isinstance(d.get("answer"), str) and not d.get("tool"):
+                kind = "answer"
         if kind not in {"answer", "tool", "plan", "escalate"}:
             return Decision(kind="escalate", reasoning=f"unknown decision type {kind!r}")
         return Decision(kind=kind, answer=d.get("answer"), tool=d.get("tool"), args=d.get("args") or {},

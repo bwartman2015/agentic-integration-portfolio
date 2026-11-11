@@ -1,6 +1,5 @@
 {
   "description": "Eval: the human approver rejects the request, so nothing is written and the agent says so.",
-  "approval": "reject",
   "responses": [
     {
       "type": "tool",

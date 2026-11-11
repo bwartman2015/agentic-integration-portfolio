@@ -1,5 +1,11 @@
 [
   {
+    "name": "cs-copilot",
+    "project": "01",
+    "url": "http://127.0.0.1:8701",
+    "auth": "keycloak-client-credentials"
+  },
+  {
     "name": "order-exception-triage",
     "project": "02",
     "url": "http://127.0.0.1:8702"

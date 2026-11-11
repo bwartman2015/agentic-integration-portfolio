@@ -40,5 +40,23 @@
     "expect_tools": [],
     "forbid_tools": [],
     "expect_answer_contains": []
+  },
+  {
+    "id": "cs-question-routes-to-cs-copilot",
+    "input": "Summit Contractors says SO-104233 hasn't arrived and they were billed. What should we tell them?",
+    "scopes": [
+      "delegate.mesh",
+      "cases.read"
+    ],
+    "expect_status": "answered",
+    "expect_tools": [
+      "ask_cs_copilot"
+    ],
+    "forbid_tools": [
+      "record_resolution"
+    ],
+    "expect_answer_contains": [
+      "SO-104233"
+    ]
   }
 ]

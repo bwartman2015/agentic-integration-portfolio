@@ -66,3 +66,12 @@ make eval P=07          # after Milestone 0
 | 4 | API Management proxy | OAuth, quota, spike arrest, JSON threat protection. | Planned |
 | 5 | Assistant via MCP gateway | Register get_order_360 in Project 01; assistant with RAG glossary and skill. | Planned |
 | 6 | Evals + A2A card | Eval set, baseline, Agent Card. | Planned |
+
+### Evals
+`evals/cases.json` holds 3 cases so far; `make eval P=07` runs them once the agents are implemented (Milestone 0), and the first run becomes the baseline that later runs must not fall below.
+
+| Case | Input | Expected status | Must call | Must not call | Result |
+|---|---|---|---|---|---|
+| partial-delivery | Status of Summit Contractors order SO-104233? | answered | get_order_360 | - | not run yet |
+| credit-hold | Why is Pinecrest Hardware's order SO-104410 blocked? | answered | get_order_360, get_credit_exposure | - | not run yet |
+| glossary-direct | What does delivery status B mean? | answered | - | get_order_360 | not run yet |

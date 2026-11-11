@@ -66,3 +66,13 @@ make eval P=02          # after Milestone 0
 | 4 | Triage agent + n8n approval | Triage agent with skills and RAG; n8n approval workflow; decision flows back via webhook. | Planned |
 | 5 | Partner onboarding copilot | Plan-and-execute mapping drafting with RAG over the implementation guide. | Planned |
 | 6 | Evals, metrics, A2A card | Eval report + baseline; Grafana metrics; publish the triage Agent Card. | Planned |
+
+### Evals
+`evals/cases.json` holds 4 cases so far; `make eval P=02` runs them once the agents are implemented (Milestone 0), and the first run becomes the baseline that later runs must not fall below.
+
+| Case | Input | Expected status | Must call | Must not call | Result |
+|---|---|---|---|---|---|
+| price-mismatch | PO-7710 from BBO flagged: line 2 price 18.40 vs agreement 19.95 for SKU RG-HELM-02. | answered | get_partner_profile, request_order_decision | - | not run yet |
+| qty-spike-short-stock | PO-7722 from BBO flagged: 1,200 cases of RG-GLOVE-L vs typical 120. | answered | get_order_history, get_available_to_promise | - | not run yet |
+| new-ship-to | PO-7731 flagged: unknown ship-to 0457 for Pinecrest Hardware. | answered | get_partner_profile | - | not run yet |
+| onboard-partner | Onboard Trailhead Sports for X12 850 using their guide and 5 sample files. | answered | parse_x12, draft_mapping, run_mapping_tests | - | not run yet |

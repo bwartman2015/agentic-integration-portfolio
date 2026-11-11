@@ -93,5 +93,7 @@ class EvidenceBackedAnswerVerifier:
         if unknown:
             problems.append(f"unknown citations {unknown}")
         if not percept.entities and not evidence and not (cites & self.known_citations):
-            problems.append("no evidence: call a tool or cite a policy document")
+            hint = f" such as [{sorted(self.known_citations)[0]}]" if self.known_citations else ""
+            problems.append("no evidence: call a tool, or cite the policy document you used with its exact "
+                            f"cite value in square brackets{hint}")
         return (not problems, "; ".join(problems))

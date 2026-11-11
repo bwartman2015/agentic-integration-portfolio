@@ -9,8 +9,10 @@ cases.json:
    "expect_status": "answered",
    "expect_tools": ["search_accounts", "get_sales_order"],   # must be called (any order)
    "forbid_tools": ["create_task"],                            # must NOT be called
-   "expect_answer_contains": ["4500017"],                      # case-insensitive substrings
-   "max_cost_usd": 0.05, "max_iterations": 4}
+   "expect_answer_contains": ["4500017", ["not found", "couldn't find"]],   # case-insensitive substrings;
+                                                                 # a list = any one of these phrasings
+   "max_cost_usd": 0.05, "max_iterations": 4,
+   "approval": "approve"}                                     # optional: the human decision a write gets
 ]
 run_evals() returns an EvalReport; save it to evals/results/ and compare_to_baseline() fails the
 build when the success rate drops, so quality can only improve over time.
@@ -34,11 +36,14 @@ class EvalCase:
     expect_status: str = "answered"
     expect_tools: list[str] = field(default_factory=list)
     forbid_tools: list[str] = field(default_factory=list)
-    expect_answer_contains: list[str] = field(default_factory=list)
+    expect_answer_contains: list[str | list[str]] = field(default_factory=list)
     max_cost_usd: float | None = None
     max_iterations: int | None = None
     tags: list[str] = field(default_factory=list)
     attributes: dict[str, list[str]] = field(default_factory=dict)   # Principal.attributes, e.g. regions
+    # The human decision this case assumes for writes ("approve" | "reject" | "timeout"); the project's
+    # eval runner installs a matching approver, the same for every model, so cases mean the same thing.
+    approval: str | None = None
 
 
 @dataclass
@@ -52,6 +57,7 @@ class CaseResult:
     iterations: int
     tool_selection_ok: bool
     trace_id: str = ""
+    latency_s: float = 0.0
 
 
 @dataclass
@@ -72,21 +78,28 @@ class EvalReport:
     def avg_cost_usd(self) -> float:
         return sum(r.cost_usd for r in self.results) / len(self.results) if self.results else 0.0
 
+    @property
+    def avg_latency_s(self) -> float:
+        return sum(r.latency_s for r in self.results) / len(self.results) if self.results else 0.0
+
     def summary(self) -> dict[str, Any]:
         return {"agent": self.agent, "cases": len(self.results), "success_rate": round(self.success_rate, 3),
                 "tool_selection_accuracy": round(self.tool_selection_accuracy, 3),
                 "avg_cost_usd": round(self.avg_cost_usd, 5),
+                "total_cost_usd": round(sum(r.cost_usd for r in self.results), 5),
+                "avg_latency_s": round(self.avg_latency_s, 2),
                 "avg_iterations": round(sum(r.iterations for r in self.results) / max(len(self.results), 1), 2)}
 
     def to_markdown(self) -> str:
         s = self.summary()
         lines = [f"## Eval report: {self.agent}", "",
                  f"Success {s['success_rate']:.0%} · tool selection {s['tool_selection_accuracy']:.0%} · "
-                 f"avg cost ${s['avg_cost_usd']:.4f} · avg iterations {s['avg_iterations']}", "",
-                 "| Case | Result | Tools used | Failures |", "|---|---|---|---|"]
+                 f"avg cost ${s['avg_cost_usd']:.4f} · avg latency {s['avg_latency_s']}s · "
+                 f"avg iterations {s['avg_iterations']}", "",
+                 "| Case | Result | Tools used | Latency | Failures |", "|---|---|---|---|---|"]
         for r in self.results:
             lines.append(f"| {r.id} | {'PASS' if r.passed else 'FAIL'} | {', '.join(r.tools_used) or '-'} | "
-                         f"{'; '.join(r.failures) or '-'} |")
+                         f"{r.latency_s:.1f}s | {'; '.join(r.failures) or '-'} |")
         return "\n".join(lines)
 
     def save(self, directory: str) -> pathlib.Path:
@@ -106,11 +119,14 @@ def run_evals(agent_factory: Callable[[EvalCase], Any], cases: list[EvalCase], a
     results = []
     for case in cases:
         agent = agent_factory(case)
+        start = time.perf_counter()
         try:
             out = agent.run(case.input, Principal(f"eval:{case.id}", frozenset(case.scopes), case.attributes))
         except Exception as e:
-            results.append(CaseResult(case.id, False, [f"crashed: {type(e).__name__}: {e}"], "error", [], 0.0, 0, False))
+            results.append(CaseResult(case.id, False, [f"crashed: {type(e).__name__}: {e}"], "error", [], 0.0, 0, False,
+                                      latency_s=round(time.perf_counter() - start, 2)))
             continue
+        latency = round(time.perf_counter() - start, 2)
         fails = []
         if out.status != case.expect_status:
             fails.append(f"status {out.status} != {case.expect_status}")
@@ -123,14 +139,15 @@ def run_evals(agent_factory: Callable[[EvalCase], Any], cases: list[EvalCase], a
             fails.append(f"forbidden tools used {forbidden}")
         low = out.answer.lower()
         for s in case.expect_answer_contains:
-            if s.lower() not in low:
+            options = [s] if isinstance(s, str) else list(s)
+            if not any(o.lower() in low for o in options):
                 fails.append(f"answer lacks {s!r}")
         if case.max_cost_usd is not None and out.cost_usd > case.max_cost_usd:
             fails.append(f"cost ${out.cost_usd:.4f} > ${case.max_cost_usd}")
         if case.max_iterations is not None and out.iterations > case.max_iterations:
             fails.append(f"iterations {out.iterations} > {case.max_iterations}")
         results.append(CaseResult(case.id, not fails, fails, out.status, out.tools_used, out.cost_usd,
-                                  out.iterations, not missing and not forbidden, out.trace_id))
+                                  out.iterations, not missing and not forbidden, out.trace_id, latency))
     return EvalReport(agent_name, results)
 
 

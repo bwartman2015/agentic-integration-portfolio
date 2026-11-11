@@ -122,20 +122,100 @@ class WireHeaderTests(unittest.TestCase):
 
 
 class FetchModelTests(unittest.TestCase):
-    def test_pinned_model_and_a_mismatching_download_is_discarded(self):
+    def test_pinned_models_and_a_mismatching_download_is_discarded(self):
         import importlib.util
         import io
         import pathlib
         spec = importlib.util.spec_from_file_location("fetch_model", "/app/copilot/fetch_model.py")
         fetch = importlib.util.module_from_spec(spec)
+        import sys
+        sys.modules["fetch_model"] = fetch                  # dataclasses look their module up while defining
         spec.loader.exec_module(fetch)
-        self.assertRegex(fetch.SHA256, r"^[0-9a-f]{64}$")
-        self.assertRegex(fetch.REVISION, r"^[0-9a-f]{40}$")
+        self.assertEqual(set(fetch.MODELS), {"embeddings", "chat"})
+        for model in fetch.MODELS.values():
+            self.assertRegex(model.sha256, r"^[0-9a-f]{64}$")
+            self.assertRegex(model.url, r"^https://huggingface\.co/[^/]+/[^/]+/resolve/[0-9a-f]{40}/")
         with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {"MODELS_DIR": d}), \
                 mock.patch("urllib.request.urlopen", lambda url, timeout: io.BytesIO(b"x" * 10)), \
                 mock.patch("sys.stderr", io.StringIO()):
-            self.assertEqual(fetch.main(), 1)
+            self.assertEqual(fetch.main(["chat"]), 1)
             self.assertEqual(list(pathlib.Path(d).iterdir()), [])
+            self.assertEqual(fetch.main(["nope"]), 2)
+
+
+class A2ATokenTests(unittest.TestCase):
+    """The A2A server verifies the caller's Keycloak token like the gateway does (RS256, real keys)."""
+
+    ISS, AUD = "http://localhost:8080/realms/ridgeline", "ridgeline-gateway"
+
+    @classmethod
+    def setUpClass(cls):
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        cls.key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        cls.other = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+    def token(self, key=None, **overrides):
+        import time
+        import jwt
+        now = int(time.time())
+        claims = {"iss": self.ISS, "aud": self.AUD, "typ": "Bearer", "azp": "cs-rep", "iat": now, "exp": now + 300,
+                  "scope": "crm.read erp.read shipping.read ar.read profile", "regions": ["Central", "bad;region"]}
+        claims.update(overrides)
+        claims = {k: v for k, v in claims.items() if v is not None}
+        return jwt.encode(claims, key or self.key, algorithm="RS256", headers={"kid": "k1"})
+
+    def verifier(self):
+        from cs_copilot.a2a_server import TokenVerifier, VerifierConfig
+        public = self.key.public_key()
+        return TokenVerifier(VerifierConfig(self.ISS, self.AUD, "http://keycloak/certs"), keys=lambda token: public)
+
+    def test_a_valid_token_gives_the_callers_scopes_and_regions(self):
+        p = self.verifier().principal(self.token())
+        self.assertEqual(p.id, "cs-rep")
+        self.assertEqual(p.scopes, frozenset({"crm.read", "erp.read", "shipping.read", "ar.read"}))   # known scopes only
+        self.assertEqual(list(p.attr("regions")), ["Central"])
+
+    def test_every_invalid_token_is_refused(self):
+        import time
+        v = self.verifier()
+        now = int(time.time())
+        bad = {"wrong key": self.token(key=self.other), "wrong issuer": self.token(iss="http://evil.example/realms/x"),
+               "wrong audience": self.token(aud="account"), "expired": self.token(exp=now - 60, iat=now - 400),
+               "not an access token": self.token(typ="ID"), "no client id": self.token(azp=None),
+               "garbage": "not.a.jwt", "none": None}
+        for why, token in bad.items():
+            self.assertIsNone(v.principal(token), why)
+
+    def test_served_end_to_end_over_a2a_with_the_callers_token(self):
+        import urllib.error
+        from agentcore import A2AClient, Outcome, serve_agent
+        from cs_copilot.a2a_server import load_card, make_authenticator
+        ran = []
+
+        class Runner:
+            def __init__(self, token):
+                self.token = token
+
+            def run(self, text, principal):
+                ran.append((self.token, principal.id))
+                return Outcome("answered", "SO-104233 shipped.", 1, 1, 0.0, "trace-xyz")
+
+        auth = make_authenticator(self.verifier(), "http://gateway:8000/mcp")
+        server = serve_agent(None, load_card("http://localhost:8701"),
+                             authenticate=lambda t: (Runner(t), auth(t)[1]) if auth(t) else None,
+                             public_url="http://localhost:8701")
+        try:
+            base = f"http://127.0.0.1:{server.server_address[1]}"
+            self.assertEqual(A2AClient(base).card().url, "http://localhost:8701")
+            good = self.token()
+            task = A2AClient(base, bearer_token=good).send("Where is SO-104233?")
+            self.assertEqual((task["status"]["state"], task["metadata"]["trace_id"]), ("completed", "trace-xyz"))
+            self.assertEqual(ran, [(good, "cs-rep")])
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                A2AClient(base, bearer_token=self.token(key=self.other)).send("x")
+            self.assertEqual(ctx.exception.code, 401)
+        finally:
+            server.shutdown()
 
 
 if __name__ == "__main__":

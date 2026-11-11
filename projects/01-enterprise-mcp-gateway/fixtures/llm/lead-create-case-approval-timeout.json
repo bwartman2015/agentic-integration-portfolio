@@ -1,6 +1,5 @@
 {
   "description": "Eval: no human answers in time; the approval gate fails closed and the agent reports it without retrying.",
-  "approval": "timeout",
   "responses": [
     {
       "type": "tool",

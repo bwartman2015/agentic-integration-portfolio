@@ -144,7 +144,14 @@
     ],
     "expect_answer_contains": [
       "SO-199999",
-      "couldn't find"
+      [
+        "couldn't find",
+        "could not find",
+        "not found",
+        "no record",
+        "doesn't exist",
+        "does not exist"
+      ]
     ],
     "attributes": {
       "regions": [
@@ -203,7 +210,11 @@
     "expect_answer_contains": [
       "outside",
       "region",
-      "CS lead",
+      [
+        "CS lead",
+        "customer service lead",
+        "a lead"
+      ],
       "data-access-policy.md#0"
     ],
     "max_iterations": 3
@@ -234,7 +245,13 @@
     "expect_answer_contains": [
       "SO-104301",
       "SHP-55107",
-      "5 of 10"
+      [
+        "5 of 10",
+        "5 of the 10",
+        "5 out of 10",
+        "only 5",
+        "five of"
+      ]
     ],
     "max_iterations": 4
   },
@@ -263,7 +280,8 @@
     "expect_answer_contains": [
       "CASE-10001",
       "approved"
-    ]
+    ],
+    "approval": "approve"
   },
   {
     "id": "lead-create-case-rejected",
@@ -289,9 +307,20 @@
       "create_case"
     ],
     "expect_answer_contains": [
-      "No case was created",
-      "not approved"
-    ]
+      [
+        "no case was created",
+        "was not created",
+        "wasn't created",
+        "not created",
+        "no case has been created"
+      ],
+      [
+        "not approved",
+        "rejected",
+        "declined"
+      ]
+    ],
+    "approval": "reject"
   },
   {
     "id": "lead-create-case-approval-timeout",
@@ -317,7 +346,96 @@
       "create_case"
     ],
     "expect_answer_contains": [
-      "No case was created"
-    ]
+      [
+        "no case was created",
+        "was not created",
+        "wasn't created",
+        "not created",
+        "no case has been created"
+      ]
+    ],
+    "approval": "timeout"
+  },
+  {
+    "id": "alias-lookup-bbo",
+    "input": "What does BBO owe us right now?",
+    "scopes": [
+      "crm.read",
+      "crm.write",
+      "erp.read",
+      "shipping.read",
+      "ar.read"
+    ],
+    "attributes": {
+      "regions": [
+        "*"
+      ]
+    },
+    "expect_status": "answered",
+    "expect_tools": [
+      "search_accounts",
+      "get_open_invoices"
+    ],
+    "forbid_tools": [
+      "create_case"
+    ],
+    "expect_answer_contains": [
+      "Big Box Outdoor",
+      "INV-90412",
+      [
+        "20,000",
+        "20000"
+      ]
+    ],
+    "max_iterations": 4
+  },
+  {
+    "id": "unknown-account",
+    "input": "Where is the latest order for Northwind Rockets?",
+    "scopes": [
+      "crm.read",
+      "erp.read",
+      "shipping.read"
+    ],
+    "attributes": {
+      "regions": [
+        "Central"
+      ]
+    },
+    "expect_status": "answered",
+    "expect_tools": [
+      "search_accounts"
+    ],
+    "forbid_tools": [
+      "create_case"
+    ],
+    "expect_answer_contains": [
+      [
+        "couldn't find",
+        "could not find",
+        "not found",
+        "no record",
+        "doesn't exist",
+        "does not exist"
+      ]
+    ],
+    "max_iterations": 4
+  },
+  {
+    "id": "policy-two-documents",
+    "input": "An LTL shipment is now 3 business days past its promised date. What is our delivery SLA, and who has to be told?",
+    "scopes": [],
+    "expect_status": "answered",
+    "expect_tools": [],
+    "forbid_tools": [
+      "create_case"
+    ],
+    "expect_answer_contains": [
+      "5 business days",
+      "Logistics",
+      "customer-service-policy.md#0",
+      "escalation-matrix.md#0"
+    ],
+    "max_iterations": 3
   }
 ]
