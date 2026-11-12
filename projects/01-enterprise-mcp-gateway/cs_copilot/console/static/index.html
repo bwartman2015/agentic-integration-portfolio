@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ridgeline CS Copilot Console</title>
+  <link rel="stylesheet" href="/static/console.css">
+  <script src="/static/console.js" defer></script>
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="logo" aria-hidden="true">R</span>
+      <div>
+        <h1>CS Copilot Console</h1>
+        <p class="sub">Ridgeline Supply Co. (fictional, synthetic data) · every call goes through the governed MCP gateway</p>
+      </div>
+    </div>
+    <span class="badge" id="local-badge">local only</span>
+  </header>
+
+  <main class="layout">
+    <section class="card ask" aria-labelledby="ask-title">
+      <h2 id="ask-title">Ask</h2>
+      <form id="ask-form">
+        <div class="row">
+          <label>Acting as
+            <select id="role"></select>
+          </label>
+          <label>Model
+            <select id="model"></select>
+          </label>
+        </div>
+        <label>Example questions
+          <select id="examples"><option value="">Pick an example (or type your own below)</option></select>
+        </label>
+        <label>Question
+          <textarea id="question" rows="3" maxlength="4000" placeholder="Summit Contractors says SO-104233 hasn't arrived and they were billed. What's going on?"></textarea>
+        </label>
+        <div class="actions">
+          <button type="submit" id="ask-button">Ask the copilot</button>
+          <span class="hint" id="model-hint"></span>
+        </div>
+        <p class="error" id="ask-error" role="alert" hidden></p>
+      </form>
+    </section>
+
+    <section class="card run" id="run" hidden aria-live="polite">
+      <div class="run-head">
+        <h2>Run <code id="run-id"></code></h2>
+        <span class="status" id="run-status"></span>
+        <span class="meta" id="run-meta"></span>
+      </div>
+
+      <div class="approval" id="approval" hidden></div>
+
+      <div class="answer-block" id="answer-block" hidden>
+        <h3>Answer</h3>
+        <div class="answer" id="answer"></div>
+        <div class="citation" id="citation" hidden></div>
+      </div>
+
+      <div class="grid">
+        <div>
+          <h3>Steps <span class="count" id="steps-count"></span></h3>
+          <ol class="steps" id="steps"></ol>
+        </div>
+        <div>
+          <h3>Gateway tool calls</h3>
+          <table class="tools"><thead><tr><th>Tool</th><th>Result</th><th>ms</th></tr></thead><tbody id="tools"></tbody></table>
+          <p class="empty" id="tools-empty">No tool calls yet.</p>
+          <h3>Memory recall</h3>
+          <ul class="recall" id="recall"></ul>
+          <p class="empty" id="recall-empty">Nothing recalled yet.</p>
+        </div>
+      </div>
+
+      <div class="audit-block">
+        <div class="audit-head">
+          <h3>Audit trail</h3>
+          <span class="meta">trace <code id="trace-id">(pending)</code></span>
+          <button type="button" class="secondary" id="audit-button" disabled>View this run's audit rows</button>
+        </div>
+        <table class="audit" id="audit" hidden>
+          <thead><tr><th>Time (UTC)</th><th>Client</th><th>Tool</th><th>Outcome</th><th>Reason</th><th>Arguments (masked)</th></tr></thead>
+          <tbody id="audit-rows"></tbody>
+        </table>
+        <p class="empty" id="audit-note" hidden></p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    Operator console, published on 127.0.0.1 only. Agents act with their own Keycloak identity; OPA authorizes and the
+    gateway audits every call. Writes wait for a human in the approval workflow.
+  </footer>
+</body>
+</html>

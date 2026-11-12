@@ -349,6 +349,33 @@ class ApprovalTests(_Governed):
         self.assertNotIn(sent["callback_token"], json.dumps(self.audit.rows) + json.dumps(self.audit.approvals) + json.dumps(rec))
         self.assertEqual(approver.pending(), [])
 
+    async def test_the_callers_trace_id_is_recorded_with_the_request_and_listed_for_the_operator_only(self):
+        approver = self.use_approver()
+        details = {"trace_id": "trace-abc123", "account_id": "ACCT-1002", "subject": "Late delivery", "summary": "x"}
+        ask = asyncio.create_task(approver.request({"client_id": "cs-lead"}, "create_case", details))
+        for _ in range(200):
+            if approver.pending():
+                break
+            await asyncio.sleep(0.01)
+        waiting = approver.pending()[0]
+        self.assertEqual(waiting["trace_id"], "trace-abc123")
+        self.assertEqual(self.audit.approvals[waiting["request_id"]]["trace_id"], "trace-abc123")
+        self.assertNotIn("trace_id", self.n8n.requests[-1])                 # the form does not need it
+        self.assertTrue(await self.decide_when_asked(approver))
+        self.assertEqual((await ask).status, "approved")
+
+    def test_only_a_well_formed_trace_header_becomes_the_requests_trace_id(self):
+        self.assertEqual(server.caller_trace_id({"x_request_id": "trace-1"}), "trace-1")
+        tp = "00-" + "a" * 32 + "-" + "b" * 16 + "-01"
+        self.assertEqual(server.caller_trace_id({"traceparent": tp, "x_request_id": "trace-1"}), tp)
+        self.assertIsNone(server.caller_trace_id({"x_request_id": "invalid"}))
+        self.assertIsNone(server.caller_trace_id({"request_id": "7"}))
+
+    def test_the_approval_insert_writes_the_trace_id(self):
+        from ridgeline_gateway.audit import INSERT_APPROVAL
+        self.assertIn("trace_id", INSERT_APPROVAL)
+        self.assertIn("$6", INSERT_APPROVAL)
+
     async def test_n8n_gets_the_shared_secret_and_the_deadline_and_the_audit_gets_a_masked_subject(self):
         act_as(self, LEAD)
         approver = self.use_approver(timeout_s=45)

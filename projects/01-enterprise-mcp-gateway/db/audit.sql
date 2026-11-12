@@ -43,6 +43,9 @@ CREATE TABLE IF NOT EXISTS approvals (
     approver     text,                          -- the name the human gave on the approval form
     decided_at   timestamptz
 );
+-- Milestone 8: the trace id of the agent run that asked (x-request-id), so an operator console can match a
+-- waiting approval to its run exactly. Written once with the request, like the other request columns.
+ALTER TABLE approvals ADD COLUMN IF NOT EXISTS trace_id text;
 
 CREATE OR REPLACE FUNCTION audit_log_is_append_only() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
@@ -81,7 +84,7 @@ BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'gateway_audit') THEN
         GRANT INSERT, SELECT ON audit_log TO gateway_audit;
         GRANT USAGE ON SEQUENCE audit_log_id_seq TO gateway_audit;
-        GRANT INSERT (request_id, client_id, tool, account_id, subject), SELECT ON approvals TO gateway_audit;
+        GRANT INSERT (request_id, client_id, tool, account_id, subject, trace_id), SELECT ON approvals TO gateway_audit;
         GRANT UPDATE (status, approver, decided_at) ON approvals TO gateway_audit;
     END IF;
 END $$;

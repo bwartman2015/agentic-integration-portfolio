@@ -56,6 +56,7 @@ make ask P=01 Q="Summit Contractors says SO-104233 hasn't arrived and they were 
                         # the copilot in its container: tools through the gateway, memory in pgvector
                         # (ROLE=cs-lead to ask as a lead; LLM=local for the real local model, any question;
                         #  without LLM the scripted model answers the questions Q=--list shows)
+make console-up P=01    # the web console: http://localhost:8790 (loopback only; see "Web console" below)
 make a2a-up P=01        # the copilot's A2A endpoint: Agent Card at http://localhost:8701/.well-known/agent-card.json
 make opa-test P=01      # Rego unit tests + format check for policy/, in the pinned OPA image
 make gateway-test P=01  # gateway + mock-API tests, inside their images' test stages (real OPA binary)
@@ -91,19 +92,40 @@ make eval P=01 LLM=local   # the real local model vs evals/baseline.local.json (
 | 5 | Guardrails, audit, approvals | Rate limits, PII masking, audit table and `/audit` report; n8n approval for `create_case`, denying on timeout | Done |
 | 6 | Copilot on the gateway, long-term memory | The copilot calls the gateway through an MCP client; RAG and skills; Postgres + pgvector memory | Done |
 | 7 | Evals and A2A card | Real-model eval baseline (a free local model on llama.cpp); publish the copilot's Agent Card | Done |
+| 8 | Web console | A local page to ask the copilot as a rep or a lead and watch the run: tool calls, memory, citations, audit rows, approvals | Done |
+
+**Milestone 8 (web console): done.** A local page for trying the copilot without the terminal: `make console-up P=01`, then open the sign-in link it prints (http://localhost:8790/?token=...).
+
+### Web console
+1. Pick who you are (**cs-rep**, a Central-region rep who can only read, or **cs-lead**, who sees every region and may propose cases) and a model (**scripted** for the example questions, instant; the **local** model for any question, about 1-2 minutes on a laptop CPU; or the optional, paid **hosted** model when it is configured).
+2. Ask. Each step appears as it finishes: the plan, every gateway tool call (allowed with data, or denied with the policy's reason), memory recall from earlier runs, and the verifier's check.
+3. The answer comes with clickable citations that open the policy paragraph they rest on.
+4. **View this run's audit rows** lists the gateway's audit records for the run's trace id: which client called which tool, the outcome and the reason, with argument values masked.
+5. A lead's case request pauses at **Waiting for a human decision**, with the time left and an **Open the approval form** button (the n8n form). Approve or reject there, and the run finishes with "Case CASE-... created" or "No case was created" and the gateway's reason. In this local demo the person asking and the person approving share one browser; a real deployment would send the form to a separate approver (the approver's name is what they type, so the form link is handled like a credential).
+
+| Web console (Milestone 8) | What works now |
+|---|---|
+| Same path as everything else | Each question runs the real copilot with the chosen role's Keycloak token: OPA authorizes and the gateway audits every call, memory is the same pgvector store, writes wait for the same n8n approval |
+| Operator view, kept apart | The console is its own service (same image) holding two operator credentials no agent container has: the auditor identity (audit rows) and the approval operator token (the waiting request and its form link). The copilot runs in the same process, but its model and tools never receive them: only the console's own audit and approval lookups use them. The gateway now records each approval request's trace id, so the console matches a waiting approval to its run exactly |
+| Local and locked down | A console token (generated into `.env`): `make console-up` prints a one-time sign-in link that sets an HttpOnly, SameSite=Strict cookie, and every API call needs it, so neither another website nor another container on the Docker networks (an agent, a model server) can drive the console or reach its operator credentials. Published on 127.0.0.1 only; requests must name an allowed Host; a question (POST) also needs the console's own header and, when sent, an allowed Origin. A strict Content-Security-Policy on every response (no inline script, no third-party code); everything from the server is rendered as text, never as markup |
+| Free | Starlette and uvicorn were already in the copilot image; the page is plain HTML and JavaScript with no build step and no CDN |
+
+Verified (Milestone 8): `make console-check P=01` on the test stack (the demo question answered with both citations, four tool calls through the gateway, 12 audit rows for its trace); a live lead case request showed the waiting state with the signed n8n form link and, left unanswered, ended as "No case was created" with the gateway's timeout reason. `make copilot-test`: 24 tests, 15 of them the console's (API, sign-in, security headers, approval states, the gateway lookups). `make gateway-test`: 182 gateway + 9 mock-API tests. Upgrading an existing setup: run `make db-init P=01` (and `TARGET=test`) once for the new approval column; see the setup guide.
 
 **Milestone 7 (evals and A2A card): done.** The copilot is measured with a real model, published as an A2A agent, and tested without ever touching the demo database. Everything runs on free components.
 
-**Real-model evals.** The same 16 cases run against the scripted model (the deterministic harness check) and a real one: Qwen2.5-1.5B-Instruct, a small open model, on a local llama.cpp server (free, offline, CPU only). Both run on the offline backend (in-process tools over the seeded data, in-memory memory), so they compare the model and nothing else.
+**Real-model evals.** The scripted run proves the wiring: **16/16** cases pass, so every tool, policy decision, approval path, verifier check and citation is connected as designed. And with a small local model, **every guardrail held too**: the rep's case request was refused by scope, the pricing change was escalated, the out-of-region order was denied and escalated, nothing was written without a human's approval, and no invented ID or amount reached an answer.
+
+The local score is an honest small-model comparison, not a target: the same 16 cases, run by Qwen2.5-1.5B-Instruct (a 1.5-billion-parameter open model) on a laptop CPU through llama.cpp, free and offline. Both runs use the offline backend (in-process tools over the seeded data, in-memory memory), so the only difference is the model.
 
 | Model | Success | Tool selection | Avg cost / case | Avg latency / case | Avg iterations |
 |---|---|---|---|---|---|
 | Scripted (replays a fixed plan; tests the harness) | 100% | 100% | $0 | 0.0s | 2.56 |
 | Local: Qwen2.5-1.5B-Instruct Q4_K_M, llama.cpp, CPU (`evals/baseline.local.json`) | 12% | 75% | $0 | 92s | 3.81 |
 
-What the gap means: the harness holds. The scripted run passes every case, and with the real model the guardrails hold too: the rep's case request is refused by scope, the pricing change is escalated, the out-of-region order is denied and escalated (marked FAIL only because the escalation does not cite the data access policy), nothing is written without a human's approval, and no invented ID or amount reaches an answer. A 1.5B model on a laptop CPU mostly fails on the work itself: it answers from the injected state instead of calling the tools the rules require, stops a plan early, or escalates when the verifier sends an answer back. Those are exactly the failures the deterministic verifier is there to catch, and each one ended as an escalation, not as a wrong answer. A larger model is the lever: the cases, verifier and baseline stay as they are, and any model behind the provider interface is measured the same way.
+What the comparison shows: a model this small mostly falls short on the work itself, not on safety. It tends to answer from the context it was given instead of calling the tools the rules require, stop a plan early, or leave out a required fact or citation. The deterministic verifier is there for exactly that: an answer it cannot back with tool results goes back to the model, and when the model cannot fix it the run ends as an escalation rather than a confident wrong answer. (The out-of-region case is marked FAIL only because the escalation does not cite the data access policy; the denial itself held.) The lever is a larger model: the cases, the verifier and the baseline stay as they are, and any model behind the provider interface is measured the same way.
 
-| Case | Scripted | Local | Local: tools called | Local latency | Local: why it failed |
+| Case | Scripted | Local | Local: tools called | Local latency | Local: where the small model fell short |
 |---|---|---|---|---|---|
 | wismo-basic | PASS | FAIL | search_accounts, get_sales_order | 144s | escalated instead of answering; skipped track_shipment; answer missed a required fact |
 | billed-not-delivered | PASS | FAIL | search_accounts, get_sales_order | 94s | skipped get_open_invoices, track_shipment |

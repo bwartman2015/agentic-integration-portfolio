@@ -174,6 +174,7 @@ class _CallAuth:
     write: bool = False                # set by a write tool: its approval record is its audit trail
     approval_id: str | None = None
     pii_masked: int = 0                # values masked in the result (caller lacks the PII scope)
+    trace_id: str | None = None        # the caller's well-formed trace header (x-request-id / traceparent)
 
 
 _call_auth: contextvars.ContextVar[_CallAuth | None] = contextvars.ContextVar("call_auth", default=None)
@@ -265,6 +266,7 @@ class GatewayServer(MCPServer):
         upstream = begin_upstream()
         tool = self._tool_manager.get_tool(name)
         auth = _CallAuth(current_principal(), name, dict(arguments) if isinstance(arguments, dict) else {})
+        auth.trace_id = caller_trace_id(_trace_fields(context))
         auth_token = _call_auth.set(auth)
         result: Any = None
         failure: BaseException | None = None
@@ -364,6 +366,12 @@ def _mask_result(result: Any) -> int:
             block.text, n = mask_json_text(text)
             masked_total = max(masked_total, n)
     return masked_total
+
+
+def caller_trace_id(fields: dict[str, Any]) -> str | None:
+    """The caller's trace id for records that outlive the call (approval requests): a well-formed
+    traceparent, else a well-formed x-request-id, else None. A malformed header is never stored."""
+    return next((fields[k] for k in ("traceparent", "x_request_id") if fields.get(k) and fields[k] != "invalid"), None)
 
 
 def _trace_fields(context: Context | None) -> dict[str, Any]:
@@ -541,7 +549,7 @@ async def create_case(
     region = account.get("region")
     await _require_region(region if isinstance(region, str) and region else None)
     # Agents propose; a human approves. Nothing is written unless the approver says "Approve".
-    details = {"account_id": account_id, "account_name": re.sub(r"[^A-Za-z0-9 .,&'()-]", "", str(account.get("name") or ""))[:80],
+    details = {"trace_id": auth.trace_id, "account_id": account_id, "account_name": re.sub(r"[^A-Za-z0-9 .,&'()-]", "", str(account.get("name") or ""))[:80],
                "subject": subject, "summary": summary}
     try:
         approval = await get_approver().request(auth.principal, auth.tool, details,

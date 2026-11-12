@@ -10,6 +10,7 @@
 #                            long-term memory in pgvector, embeddings from llama.cpp [LLM=claude|local]
 #   make eval P=01 LLM=local  real-model evals (profile "eval"; offline backend, no database; free)
 #   make a2a-up P=01         the copilot's A2A endpoint on 127.0.0.1:8701 (profile "a2a")
+#   make console-up P=01     the local web console on http://localhost:8790 (profile "console")
 #   make down P=01           stop
 # Each container gets only the variables it needs (no env_file): Salesforce/SAP secrets reach the gateway
 # only, and each mock API only its own shared secret. The mock APIs sit on an internal-only network (no
@@ -406,7 +407,7 @@ services:
       target: runtime
       additional_contexts:
         agentcore: ../../agent-core
-    image: ridgeline/cs-copilot:0.7.0
+    image: ridgeline/cs-copilot:0.8.0
     pull_policy: never               # local build only: `make ask` and `make models` build it first
     profiles: ["copilot"]
     networks: [edge, data, embeddings, llm]
@@ -447,7 +448,7 @@ services:
     # nomic-embed-text-v1.5 (768 dimensions) from the `models` volume (`make models P=01` fills it,
     # checksum-verified). Internal network shared with the copilot only; no internet, not published.
     image: ghcr.io/ggml-org/llama.cpp:server-b12282@sha256:086942d6ac097c894d9d5bbaf8085c53af85e113fbb9d6d61b3748863c86aa5f
-    profiles: ["copilot", "a2a"]
+    profiles: ["copilot", "a2a", "console"]
     command: ["-m", "/models/nomic-embed-text-v1.5.Q8_0.gguf", "--embedding", "--pooling", "mean",
               "-c", "2048", "-b", "2048", "-ub", "2048", "--threads", "2", "--host", "0.0.0.0", "--port", "8080"]
     networks: [embeddings]
@@ -474,7 +475,7 @@ services:
   models:
     # One-off (`make models P=01 [MODEL=chat]`): downloads the embedding (or chat) model into the `models`
     # volume and verifies its SHA-256 (copilot/fetch_model.py). Same image as the copilot. Profile "admin".
-    image: ridgeline/cs-copilot:0.7.0
+    image: ridgeline/cs-copilot:0.8.0
     pull_policy: never
     profiles: ["admin"]
     entrypoint: ["python", "copilot/fetch_model.py"]
@@ -495,7 +496,7 @@ services:
     # and two slots, so the planner's and the reasoner's prompt prefixes both stay cached. `make models P=01 MODEL=chat` downloads
     # it (SHA-256 pinned). Internal network shared with the copilot containers only. Profile "local-llm".
     image: ghcr.io/ggml-org/llama.cpp:server-b12282@sha256:086942d6ac097c894d9d5bbaf8085c53af85e113fbb9d6d61b3748863c86aa5f
-    profiles: ["local-llm"]
+    profiles: ["local-llm", "console"]
     command: ["-m", "/models/qwen2.5-1.5b-instruct-q4_k_m.gguf", "-c", "16384", "-np", "2", "--threads", "2",
               "--host", "0.0.0.0", "--port", "8080"]
     networks: [llm]
@@ -524,7 +525,7 @@ services:
     # on the offline backend (in-process tools over the seeded mock systems, in-memory memory): this
     # container gets no gateway, database or Neon settings at all. Writes reports and baselines to
     # ./evals. Profile "eval".
-    image: ridgeline/cs-copilot:0.7.0
+    image: ridgeline/cs-copilot:0.8.0
     pull_policy: never
     profiles: ["eval"]
     entrypoint: ["python", "evals/run_evals.py"]
@@ -554,7 +555,7 @@ services:
     # The copilot's A2A endpoint (Milestone 7): Agent Card at /.well-known/agent-card.json and
     # message/send on 127.0.0.1:${A2A_PORT:-8701}. Keycloak token passthrough: it verifies the caller's
     # token (like the gateway) and acts with it, so it holds no client secret of its own. Profile "a2a".
-    image: ridgeline/cs-copilot:0.7.0
+    image: ridgeline/cs-copilot:0.8.0
     pull_policy: never
     profiles: ["a2a"]
     entrypoint: ["python", "-m", "cs_copilot.a2a_server"]
@@ -587,6 +588,70 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8701/.well-known/agent-card.json', timeout=2).status == 200 else 1)"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 3s
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+
+  console:
+    # The local web console (Milestone 8): http://localhost:${CONSOLE_PORT:-8790}, published on 127.0.0.1
+    # only. Ask the copilot as cs-rep or cs-lead with the scripted or local model (or the optional hosted
+    # one, when configured) and watch the run: steps,
+    # gateway tool calls, memory recall, the answer with citations, the run's audit rows, and a lead's case
+    # request waiting for a human with a link to the n8n form. An operator tool: besides the two agent
+    # identities it holds the auditor identity and the approval operator token, which no agent container
+    # has; the copilot's model and tools never receive them. Access needs the console token. Same image as
+    # the copilot. Profile "console".
+    image: ridgeline/cs-copilot:0.8.0
+    pull_policy: never
+    profiles: ["console"]
+    entrypoint: ["python", "-m", "cs_copilot.console.server"]
+    networks: [edge, data, embeddings, llm]
+    ports:
+      - "127.0.0.1:${CONSOLE_PORT:-8790}:8790"
+    environment:
+      CONSOLE_PORT: ${CONSOLE_PORT:-8790}
+      CONSOLE_ALLOWED_HOSTS: localhost,127.0.0.1
+      # Required on every /api call (cookie set by the link `make console-up` prints), so no other
+      # container on these networks can drive the console or reach its operator credentials.
+      CONSOLE_TOKEN: ${CONSOLE_TOKEN:?run make up P=01 to generate .env}
+      GATEWAY_URL: http://gateway:8000/mcp
+      GATEWAY_BASE_URL: http://gateway:8000
+      OIDC_TOKEN_URL: http://keycloak:8080/realms/ridgeline/protocol/openid-connect/token
+      CS_REP_CLIENT_SECRET: ${CS_REP_CLIENT_SECRET:?run make up P=01 to generate .env}
+      CS_LEAD_CLIENT_SECRET: ${CS_LEAD_CLIENT_SECRET:?run make up P=01 to generate .env}
+      P01_AUDITOR_CLIENT_SECRET: ${P01_AUDITOR_CLIENT_SECRET:?run make up P=01 to generate .env}
+      APPROVAL_OPERATOR_TOKEN: ${APPROVAL_OPERATOR_TOKEN:?run make up P=01 to generate .env}
+      APPROVAL_TIMEOUT_S: ${APPROVAL_TIMEOUT_S:-120}
+      N8N_PUBLIC_URL: http://localhost:${N8N_PORT:-5678}
+      LLM_PROVIDER: scripted
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}
+      ANTHROPIC_PRICE_IN_PER_MTOK: ${ANTHROPIC_PRICE_IN_PER_MTOK:-}
+      ANTHROPIC_PRICE_OUT_PER_MTOK: ${ANTHROPIC_PRICE_OUT_PER_MTOK:-}
+      ANTHROPIC_EFFORT: ${ANTHROPIC_EFFORT:-medium}
+      LOCAL_LLM_URL: http://llm:8080
+      MEMORY_BACKEND: pgvector
+      MEMORY_DATABASE_URL: ${MEMORY_DATABASE_URL:-}
+      MEMORY_DB_HOST: db
+      MEMORY_DB_NAME: ridgeline
+      COPILOT_MEMORY_DB_PASSWORD: ${COPILOT_MEMORY_DB_PASSWORD:?run make up P=01 to generate .env}
+      EMBEDDINGS_URL: http://embeddings:8080
+      TRACE_FILE: /tmp/traces.jsonl
+      PROGRESS_DIR: /tmp/progress
+    depends_on:
+      embeddings:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:8790/api/health', headers={'Host': 'localhost'}), timeout=2).status == 200 else 1)"]
       interval: 3s
       timeout: 3s
       retries: 20

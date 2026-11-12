@@ -22,6 +22,8 @@
 # make ask P=01 Q="..." [ROLE=cs-lead] [LLM=local|claude]  ask the CS copilot (container): gateway tools, pgvector memory
 # make a2a-up P=01     the copilot's A2A endpoint (Agent Card + message/send) on 127.0.0.1:8701
 # make a2a-check P=01  fetch the card and send a task as cs-rep over A2A (real Keycloak token)
+# make console-up P=01    the local web console on http://localhost:8790 (loopback only)
+# make console-check P=01 one question through the console on a test stack: answer, tool calls, audit rows
 # make copilot-test P=01  build the copilot image's test stage and run its tests (real MCP SDK, no network)
 # make request-case P=01  as cs-lead, request a CRM case and wait for the human decision in n8n
 # make seed-salesforce P=01 [ARGS=--apply]  write synthetic Ridgeline accounts to the Salesforce dev org
@@ -45,7 +47,7 @@ MODEL ?= embeddings
 COMPOSE = docker compose -f $$d/docker-compose.yml $(if $(DB),-f $$d/docker-compose.db-$(DB).yml)
 PROJECTS := $(if $(P),$(wildcard projects/$(P)*/),$(wildcard projects/*/))
 
-.PHONY: test core-test project-tests arch-check eval check demo up down gateway-test copilot-test opa-test live-check seed-salesforce token audit approvals request-case db-init db-roles models ask a2a-up a2a-check
+.PHONY: test core-test project-tests arch-check eval check demo up down gateway-test copilot-test opa-test live-check seed-salesforce token audit approvals request-case db-init db-roles models ask a2a-up a2a-check console-up console-check
 
 test: core-test project-tests
 
@@ -115,7 +117,8 @@ COMPOSE_DUMMY_SECRETS = CARRIER_API_KEY=unused AR_API_TOKEN=unused KC_ADMIN_PASS
 	CS_REP_CLIENT_SECRET=unused CS_LEAD_CLIENT_SECRET=unused P01_EXPIRY_TEST_CLIENT_SECRET=unused \
 	P01_CRM_ONLY_TEST_CLIENT_SECRET=unused P01_RATE_TEST_CLIENT_SECRET=unused AUDIT_DB_ADMIN_PASSWORD=unused \
 	AUDIT_DB_PASSWORD=unused N8N_ENCRYPTION_KEY=unused APPROVAL_OPERATOR_TOKEN=unused \
-	APPROVAL_WEBHOOK_SECRET=unused P01_AUDITOR_CLIENT_SECRET=unused COPILOT_MEMORY_DB_PASSWORD=unused
+	APPROVAL_WEBHOOK_SECRET=unused P01_AUDITOR_CLIENT_SECRET=unused COPILOT_MEMORY_DB_PASSWORD=unused \
+	CONSOLE_TOKEN=unused
 
 # Each rebuild leaves the previous image untagged; delete those (only this repo's, by label) so local
 # image storage stays flat on a laptop's Docker Desktop.
@@ -207,6 +210,21 @@ a2a-up:
 		$(LOCAL_LLM_UP) \
 		COPILOT_LLM_PROVIDER=$(or $(LLM_PROVIDER_$(LLM)),scripted) $(COMPOSE) --profile a2a up -d --wait a2a; \
 		status=$$?; $(PRUNE_OLD_BUILDS); exit $$status)
+
+# The local web console (needs `make up P=01` running): http://localhost:8790. Starts the local model too.
+console-up:
+	$(call for_compose_projects,$(ENSURE_ENV) >/dev/null; \
+		$(COMPOSE) --progress quiet --profile copilot build copilot && \
+		$(COMPOSE) --profile admin run --rm --no-deps -T models chat && \
+		$(COMPOSE) --profile console up -d --wait console llm && \
+		$(COMPOSE) --profile console exec -T console python -c \
+			'import os; print("open this link to sign in (keep it private): http://localhost:" + os.environ.get("CONSOLE_PORT", "8790") + "/?token=" + os.environ["CONSOLE_TOKEN"])'; \
+		status=$$?; $(PRUNE_OLD_BUILDS); exit $$status)
+
+# One question through the console, as the page asks it (runs inside the console container, which holds
+# the console token; test stack only).
+console-check:
+	$(call for_compose_projects,$(COMPOSE) --profile console exec -T console python -m cs_copilot.console.check)
 
 # Fetch the card, then send a task as cs-rep with a real Keycloak token (runs in the copilot container).
 a2a-check:

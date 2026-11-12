@@ -245,8 +245,8 @@ class MemoryAudit:
 
 INSERT_AUDIT = (f"INSERT INTO audit_log ({', '.join(AUDIT_COLUMNS)}) VALUES "
                 f"({', '.join(f'${i}' for i in range(1, len(AUDIT_COLUMNS) + 1))})")
-INSERT_APPROVAL = ("INSERT INTO approvals (request_id, client_id, tool, account_id, subject) "
-                   "VALUES ($1, $2, $3, $4, $5)")
+INSERT_APPROVAL = ("INSERT INTO approvals (request_id, client_id, tool, account_id, subject, trace_id) "
+                   "VALUES ($1, $2, $3, $4, $5, $6)")
 UPDATE_APPROVAL = ("UPDATE approvals SET status = $2, approver = $3, decided_at = now() "
                    "WHERE request_id = $1 AND status = 'pending'")
 # A gateway that stops while a human is deciding leaves its request pending; no process can resolve it
@@ -307,7 +307,7 @@ class PostgresAudit:
 
     async def approval_requested(self, row: Mapping[str, Any]) -> None:
         await self._run("execute", INSERT_APPROVAL, row["request_id"], row["client_id"], row["tool"],
-                        row.get("account_id"), row.get("subject"))
+                        row.get("account_id"), row.get("subject"), row.get("trace_id"))
 
     async def approval_decided(self, request_id: str, status: str, approver: str | None) -> None:
         if status not in APPROVAL_STATUSES:

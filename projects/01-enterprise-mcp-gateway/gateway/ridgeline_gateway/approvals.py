@@ -169,7 +169,8 @@ class N8nApprover:
         subject = details.get("subject")
         await self.audit.approval_requested({"request_id": request_id, "client_id": client_id, "tool": tool,
                                              "account_id": details.get("account_id"),
-                                             "subject": mask_text(subject)[0] if isinstance(subject, str) else None})
+                                             "subject": mask_text(subject)[0] if isinstance(subject, str) else None,
+                                             "trace_id": details.get("trace_id")})
         self._pending[request_id] = entry
         status, approver = UNAVAILABLE, None
         try:
@@ -199,7 +200,7 @@ class N8nApprover:
         """Post the request to the workflow; returns the approval form link, or "" on any problem."""
         payload = {"request_id": entry.request_id, "callback_token": entry.token, "client_id": entry.client_id,
                    "tool": entry.tool, "expires_in_s": int(self.config.timeout_s),
-                   **{k: v for k, v in entry.details.items() if isinstance(v, str)}}
+                   **{k: v for k, v in entry.details.items() if isinstance(v, str) and k != "trace_id"}}
         headers = {"Accept": "application/json"}
         if self.config.webhook_secret:
             headers[WEBHOOK_SECRET_HEADER] = self.config.webhook_secret
@@ -233,6 +234,7 @@ class N8nApprover:
         now = time.time()
         return [{"request_id": p.request_id, "client_id": p.client_id, "tool": p.tool,
                  "account_id": p.details.get("account_id"), "subject": p.details.get("subject"),
+                 "trace_id": p.details.get("trace_id"),
                  "waiting_s": round(now - p.requested_at, 1),
                  "expires_in_s": max(0.0, round(self.config.timeout_s - (now - p.requested_at), 1)),
                  "approval_url": p.approval_url}

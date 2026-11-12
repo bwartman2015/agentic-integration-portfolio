@@ -109,6 +109,15 @@ flowchart LR
 | Memory & State (concept 1) | Account aliases (`BBO` for Big Box Outdoor) are searchable in the CRM (SOSL in Salesforce). The copilot's long-term memory (M6, below) lives in the same Postgres, in its own schema and role | `connectors/salesforce.py`, `../db/memory.sql` |
 | Tests | Config, connector (fake transports) and tool-contract tests in the gateway image; mock-API tests over real HTTP; stdlib wire-level tests over the running stack; `make live-check` for the live sandboxes. Policy: Rego unit tests (`make opa-test`), gateway tests against a real OPA, and one decision table (`policy/decision_cases.json`) run against both the Rego and the copilot's offline copy | `gateway/tests/`, `mock_apis/tests/`, `tests/test_gateway_http.py`, `tests/test_policy.py`, `policy/gateway_test.rego`, `admin/live_check.py` |
 
+## Web console (Milestone 8)
+| Concern | What changed | Code |
+|---|---|---|
+| Interface | A local page (`make console-up`, http://localhost:8790) that runs the copilot for a chosen role and model and shows each step as its span finishes: plan, tool calls, memory recall, verifier check, the cited answer, the run's audit rows and the approval state | `cs_copilot/console/server.py`, `cs_copilot/console/static/` |
+| Observe | A tracer sink turns each finished span into a step on the page while the run goes on; the run's trace id links it to the gateway's audit rows | `server.py` `RunSink` |
+| Guardrails | The console holds operator credentials (auditor identity, approval operator token) in its own service, never in an agent container, and the copilot's model and tools never receive them. Access needs a console token (sign-in link, HttpOnly SameSite=Strict cookie), so no other container on the networks can use the console as a deputy; loopback only, Host allowlist, a custom header and Origin check on writes, strict CSP on every response, server text rendered as text only | `server.py`, `docker-compose.yml` (`console`) |
+| Approvals | The gateway records the caller's trace id with each approval request (insert-only column), so the console matches a waiting approval to its run; the n8n form never receives it | `../db/audit.sql`, `gateway/ridgeline_gateway/approvals.py`, `server.py` |
+| Think | `get_llm` takes a provider per call, so one process serves several models without touching the environment | `cs_copilot/agent/reason.py` |
+
 ## Real models, evals and A2A (Milestone 7)
 | Layer / concept | What changed | Code |
 |---|---|---|

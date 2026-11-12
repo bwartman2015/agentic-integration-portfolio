@@ -157,9 +157,26 @@ def _price(name: str) -> float:
     return float(raw)
 
 
-def get_llm(script: str | None = None) -> LLMProvider:
-    """LLM_PROVIDER=scripted (default) | anthropic | local | fake. `script` is used only by scripted."""
-    provider = os.environ.get("LLM_PROVIDER", "scripted").strip()
+def hosted_model_configured() -> bool:
+    """True when the optional, paid hosted model has every setting it needs (key, model, prices)."""
+    return all(os.environ.get(k, "").strip() for k in ("ANTHROPIC_API_KEY", "ANTHROPIC_MODEL",
+                                                        "ANTHROPIC_PRICE_IN_PER_MTOK", "ANTHROPIC_PRICE_OUT_PER_MTOK"))
+
+
+def local_model_available(timeout_s: float = 1.5) -> bool:
+    """True when the local model's server answers its health check (LOCAL_LLM_URL)."""
+    url = os.environ.get("LOCAL_LLM_URL", "http://llm:8080").rstrip("/") + "/health"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout_s) as resp:
+            return resp.status == 200
+    except (OSError, ValueError):
+        return False
+
+
+def get_llm(script: str | None = None, provider: str | None = None) -> LLMProvider:
+    """provider (else LLM_PROVIDER) = scripted (default) | anthropic | local | fake. `script` is used only by
+    scripted. Passing `provider` lets one process (the web console) pick a model per request."""
+    provider = (provider or os.environ.get("LLM_PROVIDER", "scripted")).strip()
     if provider == "scripted":
         name = script or os.environ.get("LLM_SCRIPT")
         if not name:

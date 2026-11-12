@@ -7,6 +7,9 @@ services:
   copilot:
     environment:
       MEMORY_DATABASE_URL: ${MEMORY_DATABASE_URL_TEST:?run make db-roles P=01 TARGET=test first}
+  console:
+    environment:
+      MEMORY_DATABASE_URL: ${MEMORY_DATABASE_URL_TEST:?run make db-roles P=01 TARGET=test first}
   a2a:
     environment:
       MEMORY_DATABASE_URL: ${MEMORY_DATABASE_URL_TEST:?run make db-roles P=01 TARGET=test first}
